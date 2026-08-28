@@ -196,7 +196,6 @@ func (s *Service) Validate(handle, value string) error {
 	return nil
 }
 
-func (s *Service) CheckStrength(handle, value string) error { return s.Validate(handle, value) }
 func (s *Service) Hash(value string) (string, error) {
 	if s == nil || s.hasher == nil {
 		return "", errors.New("identity/password: service is not configured")
@@ -237,10 +236,6 @@ func (s *Service) SetHash(ctx context.Context, userID identity.UserID, hash stri
 	}
 	now := s.now().UTC()
 	return s.credentials.UpsertPasswordCredential(ctx, identity.PasswordCredential{UserID: userID, Scheme: s.hasher.Scheme(), Hash: hash, PasswordChangedAt: now, CreatedAt: now, UpdatedAt: now})
-}
-
-func (s *Service) SetPassword(ctx context.Context, userID identity.UserID, handle, value string) error {
-	return s.Set(ctx, userID, handle, value)
 }
 
 func (s *Service) AuthenticateUser(ctx context.Context, userID identity.UserID, value string) error {
@@ -293,16 +288,6 @@ func (s *Service) Change(ctx context.Context, userID identity.UserID, handle, cu
 	}
 	return s.Set(ctx, userID, handle, next)
 }
-func (s *Service) ChangePassword(ctx context.Context, userID identity.UserID, handle, current, next string) error {
-	return s.Change(ctx, userID, handle, current, next)
-}
-func (s *Service) Reset(ctx context.Context, userID identity.UserID, handle, value string) error {
-	return s.Set(ctx, userID, handle, value)
-}
-func (s *Service) ResetPassword(ctx context.Context, userID identity.UserID, handle, value string) error {
-	return s.Reset(ctx, userID, handle, value)
-}
-
 func (s *Service) Generate() (string, error) {
 	const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789"
 	buf := make([]byte, 24)

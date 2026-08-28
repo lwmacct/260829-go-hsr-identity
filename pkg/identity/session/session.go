@@ -93,12 +93,26 @@ type Service struct {
 	idGenerator   func() (identity.SessionID, error)
 }
 
+// DefaultOptions returns secure session defaults. A repository and user
+// directory are supplied by the host application before calling New.
+func DefaultOptions() Options {
+	return Options{
+		TTL:           30 * 24 * time.Hour,
+		TouchInterval: 5 * time.Minute,
+		TokenBytes:    32,
+		Binding:       NoBinding{},
+		Now:           func() time.Time { return time.Now().UTC() },
+		IDGenerator:   func() (identity.SessionID, error) { return identity.SessionID(uuid.NewV7().String()), nil },
+	}
+}
+
 func New(options Options) (*Service, error) {
 	if options.Repository == nil {
 		return nil, errors.New("identity/session: session repository is required")
 	}
+	defaults := DefaultOptions()
 	if options.TTL == 0 {
-		options.TTL = 30 * 24 * time.Hour
+		options.TTL = defaults.TTL
 	}
 	if options.TTL <= 0 {
 		return nil, errors.New("identity/session: ttl must be positive")
@@ -107,25 +121,25 @@ func New(options Options) (*Service, error) {
 		return nil, errors.New("identity/session: idle timeout must not be negative")
 	}
 	if options.TouchInterval == 0 {
-		options.TouchInterval = 5 * time.Minute
+		options.TouchInterval = defaults.TouchInterval
 	}
 	if options.TouchInterval < 0 {
 		return nil, errors.New("identity/session: touch interval must not be negative")
 	}
 	if options.TokenBytes == 0 {
-		options.TokenBytes = 32
+		options.TokenBytes = defaults.TokenBytes
 	}
 	if options.TokenBytes < 16 {
 		return nil, errors.New("identity/session: token entropy is too short")
 	}
 	if options.Binding == nil {
-		options.Binding = NoBinding{}
+		options.Binding = defaults.Binding
 	}
 	if options.Now == nil {
-		options.Now = func() time.Time { return time.Now().UTC() }
+		options.Now = defaults.Now
 	}
 	if options.IDGenerator == nil {
-		options.IDGenerator = func() (identity.SessionID, error) { return identity.SessionID(uuid.NewV7().String()), nil }
+		options.IDGenerator = defaults.IDGenerator
 	}
 	return &Service{repository: options.Repository, users: options.Users, ttl: options.TTL, idleTimeout: options.IdleTimeout, touchInterval: options.TouchInterval, tokenBytes: options.TokenBytes, binding: options.Binding, now: options.Now, claims: options.Claims, idGenerator: options.IDGenerator}, nil
 }
@@ -174,14 +188,6 @@ func (s *Service) Create(ctx context.Context, userID identity.UserID, meta ident
 		return "", nil, err
 	}
 	return token, record, nil
-}
-
-func (s *Service) CreateToken(ctx context.Context, userID identity.UserID, meta identity.RequestMeta) (string, time.Time, error) {
-	token, record, err := s.Create(ctx, userID, meta)
-	if err != nil {
-		return "", time.Time{}, err
-	}
-	return token, record.ExpiresAt, nil
 }
 
 func (s *Service) Resolve(ctx context.Context, token string, meta identity.RequestMeta) (*identity.Principal, error) {
@@ -243,13 +249,6 @@ func (s *Service) Resolve(ctx context.Context, token string, meta identity.Reque
 	return &identity.Principal{Subject: user.ID, User: user, Claims: claims, AuthenticatedAt: record.CreatedAt, SessionID: record.ID}, nil
 }
 
-func (s *Service) ResolveSession(ctx context.Context, token string, meta identity.RequestMeta) (*identity.Principal, error) {
-	return s.Resolve(ctx, token, meta)
-}
-func (s *Service) Parse(ctx context.Context, token string, meta identity.RequestMeta) (*identity.Principal, error) {
-	return s.Resolve(ctx, token, meta)
-}
-
 func (s *Service) User(ctx context.Context, token string, meta identity.RequestMeta) (*identity.User, error) {
 	principal, err := s.Resolve(ctx, token, meta)
 	if err != nil {
@@ -303,9 +302,6 @@ func (s *Service) Revoke(ctx context.Context, token, reason string, meta identit
 	}
 	return s.repository.RevokeSession(ctx, record.ID, reason, meta.ClientIP, s.now().UTC())
 }
-func (s *Service) RevokeSession(ctx context.Context, token, reason string, meta identity.RequestMeta) error {
-	return s.Revoke(ctx, token, reason, meta)
-}
 func (s *Service) Delete(ctx context.Context, token string) error {
 	if s == nil || s.repository == nil {
 		return errors.New("identity/session: service is not configured")
@@ -319,7 +315,6 @@ func (s *Service) Delete(ctx context.Context, token string) error {
 	}
 	return s.repository.DeleteSession(ctx, record.ID)
 }
-func (s *Service) DeleteSession(ctx context.Context, token string) error { return s.Delete(ctx, token) }
 func (s *Service) RevokeForUsers(ctx context.Context, userIDs []identity.UserID, reason string) error {
 	if s == nil || s.repository == nil {
 		return errors.New("identity/session: service is not configured")

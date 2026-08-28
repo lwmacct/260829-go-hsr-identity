@@ -1,12 +1,12 @@
 version: "2"
 sql:
   - engine: "postgresql"
-    schema: "pkg/identity/sqlstore/schema.sql"
+    schema: "pkg/identity/migrations"
     queries: "pkg/identity/sqlstore/queries.sql"
     gen:
       go:
         package: "identitydb"
-        out: "pkg/identity/sqlc"
+        out: "pkg/identity/internal/dbgen"
         sql_package: "database/sql"
         emit_interface: true
         emit_empty_slices: true

@@ -3,8 +3,7 @@ package identity
 import (
 	"context"
 	"errors"
-	"net"
-	"net/http"
+	"fmt"
 	"net/netip"
 	"strings"
 	"time"
@@ -58,13 +57,12 @@ func (p *Principal) Active() bool {
 }
 
 type RequestMeta struct {
-	ClientIP   string
-	Scheme     string
-	Host       string
-	UserAgent  string
-	Method     string
-	Path       string
-	RemoteAddr string
+	// ClientIP is the normalized client address used by binding policies.
+	ClientIP string
+	// UserAgent is an optional client hint. It is never trusted as an identity.
+	UserAgent string
+	// DeviceID is an optional host-provided stable device identifier.
+	DeviceID string
 }
 
 type UserCreate struct {
@@ -179,7 +177,7 @@ func (r repositoryDirectory) UserByHandle(ctx context.Context, handle string) (*
 }
 
 type SessionResolver interface {
-	ResolveSession(context.Context, string, RequestMeta) (*Principal, error)
+	Resolve(context.Context, string, RequestMeta) (*Principal, error)
 }
 
 type ClaimsResolver func(context.Context, *User) (Claims, error)
@@ -199,21 +197,51 @@ func (f HandlePolicyFunc) Normalize(value string) (string, error) {
 	return f(value)
 }
 
+// ValidationError identifies the input field and machine-readable reason
+// behind an invalid request. It unwraps to a package sentinel so callers can
+// use errors.Is(err, identity.ErrInvalid).
+type ValidationError struct {
+	Field string
+	Code  string
+	Cause error
+}
+
+func (e *ValidationError) Error() string {
+	if e == nil || (e.Field == "" && e.Code == "") {
+		return ErrInvalid.Error()
+	}
+	if e.Field == "" {
+		return e.Code
+	}
+	if e.Code == "" {
+		return e.Field + " is invalid"
+	}
+	return e.Field + ": " + e.Code
+}
+
+func (e *ValidationError) Unwrap() error {
+	if e == nil || e.Cause == nil {
+		return ErrInvalid
+	}
+	return e.Cause
+}
+
 var (
+	ErrInvalid            = errors.New("identity invalid")
 	ErrNotFound           = errors.New("identity not found")
 	ErrConflict           = errors.New("identity conflict")
-	ErrInvalidHandle      = errors.New("invalid identity handle")
+	ErrInvalidHandle      = fmt.Errorf("%w: invalid identity handle", ErrInvalid)
 	ErrHandleTaken        = errors.New("identity handle already taken")
-	ErrInvalidUser        = errors.New("invalid identity user")
+	ErrInvalidUser        = fmt.Errorf("%w: invalid identity user", ErrInvalid)
 	ErrDisabled           = errors.New("identity user disabled")
 	ErrEmptySelection     = errors.New("empty identity selection")
-	ErrInvalidState       = errors.New("invalid identity state")
-	ErrInvalidRequestMeta = errors.New("invalid identity request metadata")
+	ErrInvalidState       = fmt.Errorf("%w: invalid identity state", ErrInvalid)
+	ErrInvalidRequestMeta = fmt.Errorf("%w: invalid identity request metadata", ErrInvalid)
 	ErrUnauthenticated    = errors.New("identity unauthenticated")
 	ErrExpired            = errors.New("identity credential expired")
 	ErrRevoked            = errors.New("identity credential revoked")
 	ErrBindingMismatch    = errors.New("identity session binding mismatch")
-	ErrWeakPassword       = errors.New("identity password does not meet policy")
+	ErrWeakPassword       = fmt.Errorf("%w: identity password does not meet policy", ErrInvalid)
 	ErrUnsupported        = errors.New("identity operation unsupported")
 )
 
@@ -260,17 +288,13 @@ func NormalizeRequestMeta(meta RequestMeta) (RequestMeta, error) {
 	meta.ClientIP = strings.TrimSpace(meta.ClientIP)
 	if meta.ClientIP != "" {
 		if ip, err := netip.ParseAddr(meta.ClientIP); err != nil || !ip.IsValid() {
-			return RequestMeta{}, ErrInvalidRequestMeta
+			return RequestMeta{}, &ValidationError{Field: "client_ip", Code: "invalid_ip", Cause: ErrInvalidRequestMeta}
 		} else {
 			meta.ClientIP = ip.String()
 		}
 	}
-	meta.Scheme = strings.TrimSpace(strings.ToLower(meta.Scheme))
-	meta.Host = strings.TrimSpace(meta.Host)
 	meta.UserAgent = strings.TrimSpace(meta.UserAgent)
-	meta.Method = strings.TrimSpace(meta.Method)
-	meta.Path = strings.TrimSpace(meta.Path)
-	meta.RemoteAddr = strings.TrimSpace(meta.RemoteAddr)
+	meta.DeviceID = strings.TrimSpace(meta.DeviceID)
 	return meta, nil
 }
 
@@ -284,22 +308,3 @@ func PrincipalFromContext(ctx context.Context) (*Principal, bool) {
 }
 
 type principalKey struct{}
-
-func RequestMetaFromHTTP(r *http.Request) (RequestMeta, bool) {
-	if r == nil {
-		return RequestMeta{}, false
-	}
-	ip := r.RemoteAddr
-	if host, _, err := net.SplitHostPort(ip); err == nil {
-		ip = host
-	}
-	meta := RequestMeta{ClientIP: ip, Scheme: "http", Host: r.Host, UserAgent: r.UserAgent(), Method: r.Method, Path: r.URL.Path, RemoteAddr: r.RemoteAddr}
-	if r.TLS != nil {
-		meta.Scheme = "https"
-	}
-	normalized, err := NormalizeRequestMeta(meta)
-	if err != nil {
-		return RequestMeta{}, false
-	}
-	return normalized, true
-}

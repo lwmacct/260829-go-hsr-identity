@@ -15,6 +15,7 @@ import (
 	"github.com/lwmacct/260829-go-hsr-identity/pkg/identity/password"
 	"github.com/lwmacct/260829-go-hsr-identity/pkg/identity/session"
 	"github.com/lwmacct/260829-go-hsr-identity/pkg/identity/sqlstore"
+	"github.com/lwmacct/260829-go-hsr-identity/pkg/identity/testkit"
 	_ "modernc.org/sqlite"
 )
 
@@ -24,14 +25,17 @@ func TestSQLiteLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer sqlDB.Close()
-	if err := sqlstore.ApplySchema(context.Background(), sqlDB); err != nil {
+	if err := testkit.ApplySchema(context.Background(), sqlDB); err != nil {
 		t.Fatal(err)
 	}
-	if err := sqlstore.ApplySchema(context.Background(), sqlDB); err != nil {
+	if err := testkit.ApplySchema(context.Background(), sqlDB); err != nil {
 		t.Fatal(err)
 	}
 	store := sqlstore.New(sqlDB)
-	users := identity.MustNew(identity.Options{Users: store, Transactions: store, Now: func() time.Time { return time.Unix(100, 0).UTC() }})
+	users, err := identity.New(identity.Options{Users: store, Transactions: store, Now: func() time.Time { return time.Unix(100, 0).UTC() }})
+	if err != nil {
+		t.Fatal(err)
+	}
 	passwords, err := password.New(password.Options{Credentials: store, Users: store, UserUpdates: store, Policy: password.Policy{MinLength: 8, MaxLength: 64}, Now: func() time.Time { return time.Unix(100, 0).UTC() }})
 	if err != nil {
 		t.Fatal(err)
@@ -129,17 +133,33 @@ func TestHTTPAuthMiddleware(t *testing.T) {
 	}
 }
 
+func TestHTTPRequestMetaAdapter(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "https://example.test/", nil)
+	req.RemoteAddr = "192.0.2.10:443"
+	req.Header.Set("User-Agent", "identity-test")
+	meta, ok := httpauth.RequestMetaFromHTTP(req)
+	if !ok || meta.ClientIP != "192.0.2.10" || meta.UserAgent != "identity-test" {
+		t.Fatalf("meta=%#v ok=%v", meta, ok)
+	}
+	if _, err := identity.NormalizeRequestMeta(identity.RequestMeta{ClientIP: "not-an-ip"}); !errors.Is(err, identity.ErrInvalid) || !errors.Is(err, identity.ErrInvalidRequestMeta) {
+		t.Fatalf("validation err=%v", err)
+	}
+}
+
 func TestSessionIdleTimeout(t *testing.T) {
 	db, err := sql.Open("sqlite", ":memory:")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	if err := sqlstore.ApplySchema(context.Background(), db); err != nil {
+	if err := testkit.ApplySchema(context.Background(), db); err != nil {
 		t.Fatal(err)
 	}
 	store := sqlstore.New(db)
-	users := identity.MustNew(identity.Options{Users: store, Now: func() time.Time { return time.Unix(200, 0).UTC() }})
+	users, err := identity.New(identity.Options{Users: store, Now: func() time.Time { return time.Unix(200, 0).UTC() }})
+	if err != nil {
+		t.Fatal(err)
+	}
 	user, err := users.Create(context.Background(), identity.UserCreateInput{Handle: "idle"})
 	if err != nil {
 		t.Fatal(err)
@@ -161,6 +181,6 @@ func TestSessionIdleTimeout(t *testing.T) {
 
 type resolverFunc func(context.Context, string, identity.RequestMeta) (*identity.Principal, error)
 
-func (f resolverFunc) ResolveSession(ctx context.Context, token string, meta identity.RequestMeta) (*identity.Principal, error) {
+func (f resolverFunc) Resolve(ctx context.Context, token string, meta identity.RequestMeta) (*identity.Principal, error) {
 	return f(ctx, token, meta)
 }

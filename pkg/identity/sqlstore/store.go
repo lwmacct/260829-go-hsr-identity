@@ -4,21 +4,14 @@ package sqlstore
 import (
 	"context"
 	"database/sql"
-	_ "embed"
 	"errors"
 	"fmt"
 	"strings"
 	"time"
 
 	"github.com/lwmacct/260829-go-hsr-identity/pkg/identity"
-	identitydb "github.com/lwmacct/260829-go-hsr-identity/pkg/identity/sqlc"
+	identitydb "github.com/lwmacct/260829-go-hsr-identity/pkg/identity/internal/dbgen"
 )
-
-// schemaSQL is the sqlc schema source and the install-time schema for a fresh
-// database. It is deliberately not a migration runner.
-//
-//go:embed schema.sql
-var schemaSQL string
 
 type Store struct {
 	db      dbtx
@@ -47,39 +40,6 @@ func newStore(conn dbtx, root *sql.DB) *Store {
 func (s *Store) Users() identity.UserRepository         { return s }
 func (s *Store) Passwords() identity.PasswordRepository { return s }
 func (s *Store) Sessions() identity.SessionRepository   { return s }
-
-func ApplySchema(ctx context.Context, db *sql.DB) error {
-	if db == nil {
-		return errors.New("identity/sqlstore: database is required")
-	}
-	tx, err := db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback() }()
-	for _, statement := range strings.Split(schemaSQL, ";") {
-		statement = strings.TrimSpace(statement)
-		if statement == "" {
-			continue
-		}
-		if _, err := tx.ExecContext(ctx, statement); err != nil {
-			return err
-		}
-	}
-	return tx.Commit()
-}
-
-func ResetSchema(ctx context.Context, db *sql.DB) error {
-	if db == nil {
-		return errors.New("identity/sqlstore: database is required")
-	}
-	for _, table := range []string{"identity_sessions", "identity_passwords", "identity_users"} {
-		if _, err := db.ExecContext(ctx, "DROP TABLE IF EXISTS "+table); err != nil {
-			return err
-		}
-	}
-	return nil
-}
 
 func (s *Store) WithinTx(ctx context.Context, fn func(context.Context, identity.UnitOfWork) error) error {
 	if s == nil || s.db == nil {
@@ -298,6 +258,18 @@ func mapReadError(err error) error {
 }
 func mapWriteError(err error, field, value string) error {
 	lower := strings.ToLower(err.Error())
+	var stateErr interface{ SQLState() string }
+	if errors.As(err, &stateErr) {
+		switch stateErr.SQLState() {
+		case "23505": // unique_violation
+			if field == "handle" && strings.Contains(lower, "handle") {
+				return fmt.Errorf("%w: %s", identity.ErrHandleTaken, value)
+			}
+			return identity.ErrConflict
+		case "23503", "23514": // foreign_key_violation, check_violation
+			return identity.ErrConflict
+		}
+	}
 	if strings.Contains(lower, "unique") || strings.Contains(lower, "constraint") {
 		if field == "handle" && strings.Contains(lower, "handle") {
 			return fmt.Errorf("%w: %s", identity.ErrHandleTaken, value)

@@ -4,6 +4,7 @@ package httpauth
 import (
 	"context"
 	"errors"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -47,10 +48,6 @@ func SessionCookie(w http.ResponseWriter, token string, expiresAt time.Time, con
 		maxAge = max(0, int(time.Until(expiresAt).Seconds()))
 	}
 	http.SetCookie(w, &http.Cookie{Name: config.Name, Value: token, Path: config.Path, Domain: config.Domain, Secure: config.Secure, HttpOnly: config.HTTPOnly, SameSite: config.SameSite, Expires: expiresAt, MaxAge: maxAge})
-}
-
-func SetSessionCookie(w http.ResponseWriter, token string, expiresAt time.Time, config CookieConfig) {
-	SessionCookie(w, token, expiresAt, config)
 }
 
 func ClearSessionCookie(w http.ResponseWriter, config CookieConfig) {
@@ -99,10 +96,8 @@ func New(resolver identity.SessionResolver, config CookieConfig) *Middleware {
 	return &Middleware{Resolver: resolver, Cookie: config, Source: cookieTokenSource{config}, Meta: defaultRequestMeta}
 }
 
-func (m *Middleware) Optional(next http.Handler) http.Handler   { return m.wrap(next, false) }
-func (m *Middleware) Required(next http.Handler) http.Handler   { return m.wrap(next, true) }
-func (m *Middleware) Require(next http.Handler) http.Handler    { return m.Required(next) }
-func (m *Middleware) Middleware(next http.Handler) http.Handler { return m.Optional(next) }
+func (m *Middleware) Optional(next http.Handler) http.Handler { return m.wrap(next, false) }
+func (m *Middleware) Required(next http.Handler) http.Handler { return m.wrap(next, true) }
 
 func (m *Middleware) wrap(next http.Handler, required bool) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -136,7 +131,7 @@ func (m *Middleware) wrap(next http.Handler, required bool) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		principal, err := m.Resolver.ResolveSession(r.Context(), token, meta)
+		principal, err := m.Resolver.Resolve(r.Context(), token, meta)
 		if err != nil {
 			if required {
 				m.error(w, r, err)
@@ -159,11 +154,31 @@ func (m *Middleware) requestMeta(r *http.Request) (identity.RequestMeta, error) 
 }
 
 func defaultRequestMeta(r *http.Request) (identity.RequestMeta, error) {
-	meta, ok := identity.RequestMetaFromHTTP(r)
+	meta, ok := RequestMetaFromHTTP(r)
 	if !ok {
 		return identity.RequestMeta{}, identity.ErrInvalidRequestMeta
 	}
 	return meta, nil
+}
+
+// RequestMetaFromHTTP converts net/http request metadata into the
+// transport-neutral metadata consumed by identity session binding policies.
+func RequestMetaFromHTTP(r *http.Request) (identity.RequestMeta, bool) {
+	if r == nil {
+		return identity.RequestMeta{}, false
+	}
+	ip := r.RemoteAddr
+	if host, _, err := net.SplitHostPort(ip); err == nil {
+		ip = host
+	}
+	meta, err := identity.NormalizeRequestMeta(identity.RequestMeta{
+		ClientIP:  ip,
+		UserAgent: r.UserAgent(),
+	})
+	if err != nil {
+		return identity.RequestMeta{}, false
+	}
+	return meta, true
 }
 
 func (m *Middleware) error(w http.ResponseWriter, r *http.Request, err error) {

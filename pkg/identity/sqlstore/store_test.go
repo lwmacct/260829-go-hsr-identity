@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/lwmacct/260829-go-hsr-identity/pkg/identity"
+	"github.com/lwmacct/260829-go-hsr-identity/pkg/identity/testkit"
 	_ "modernc.org/sqlite"
 )
 
@@ -17,13 +18,10 @@ func TestApplySchemaIsIdempotent(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	if err := ApplySchema(context.Background(), db); err != nil {
+	if err := testkit.ApplySchema(context.Background(), db); err != nil {
 		t.Fatal(err)
 	}
-	if err := ApplySchema(context.Background(), db); err != nil {
-		t.Fatal(err)
-	}
-	if err := ResetSchema(context.Background(), db); err != nil {
+	if err := testkit.ApplySchema(context.Background(), db); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -34,7 +32,7 @@ func TestWithinTxRollsBackAllRepositories(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	if err := ApplySchema(context.Background(), db); err != nil {
+	if err := testkit.ApplySchema(context.Background(), db); err != nil {
 		t.Fatal(err)
 	}
 	store := New(db)

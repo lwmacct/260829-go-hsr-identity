@@ -25,28 +25,31 @@ type Service struct {
 	now          Clock
 }
 
+// DefaultOptions returns the identity service defaults. A repository must be
+// supplied by the host application before calling New.
+func DefaultOptions() Options {
+	return Options{
+		IDGenerator:  func() (UserID, error) { return UserID(uuid.NewV7().String()), nil },
+		HandlePolicy: HandlePolicyFunc(LowerASCIIHandlePolicy),
+		Now:          func() time.Time { return time.Now().UTC() },
+	}
+}
+
 func New(options Options) (*Service, error) {
 	if options.Users == nil {
 		return nil, errors.New("identity: user repository is required")
 	}
+	defaults := DefaultOptions()
 	if options.IDGenerator == nil {
-		options.IDGenerator = func() (UserID, error) { return UserID(uuid.NewV7().String()), nil }
+		options.IDGenerator = defaults.IDGenerator
 	}
 	if options.HandlePolicy == nil {
-		options.HandlePolicy = HandlePolicyFunc(LowerASCIIHandlePolicy)
+		options.HandlePolicy = defaults.HandlePolicy
 	}
 	if options.Now == nil {
-		options.Now = func() time.Time { return time.Now().UTC() }
+		options.Now = defaults.Now
 	}
 	return &Service{users: options.Users, transactions: options.Transactions, idGenerator: options.IDGenerator, handlePolicy: options.HandlePolicy, now: options.Now}, nil
-}
-
-func MustNew(options Options) *Service {
-	service, err := New(options)
-	if err != nil {
-		panic(err)
-	}
-	return service
 }
 
 func (s *Service) WithUsers(users UserRepository) *Service {
