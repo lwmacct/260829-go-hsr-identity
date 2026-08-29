@@ -6,7 +6,7 @@
 4. Call `module.Register(api)` after creating the host Huma API.
 5. Initialize the host's permission catalog and role bindings through the module's RBAC API.
 6. Use `Options.Authorizer` only for additional host policy (for example resource ownership or tenant checks).
-7. Keep OAuth, SSH keys, audit events, and business associations in host-owned tables and services. For human verification, implement the `identity.HumanChallengeProvider` contract in the host and inject it through `HTTP.ChallengeProvider`; set `HTTP.RequireChallenge` to enforce it on login and registration.
+7. Keep OAuth, SSH keys, audit events, and business associations in host-owned tables and services. For human verification, use a provider from `pkg/identity/challenge` or implement the `identity.HumanChallengeProvider` contract in the host and inject it through `HTTP.ChallengeProvider`; set `HTTP.RequireChallenge` to enforce it on login and registration.
 
 The module exposes `GET /auth/config` and `POST /auth/challenges` when a provider is configured. A host can reuse the same provider for non-authentication actions with `module.CreateChallenge` and `module.VerifyChallenge`.
 

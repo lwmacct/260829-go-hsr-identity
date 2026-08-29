@@ -4,6 +4,8 @@ go 1.27.0
 
 require (
 	github.com/danielgtaylor/huma/v2 v2.39.1
+	github.com/golang-module/base64Captcha v1.3.9
+	github.com/lwmacct/260822-go-pkg-base62 v0.2.260823
 	github.com/uptrace/bun v1.2.18
 	github.com/uptrace/bun/dialect/pgdialect v1.2.18
 	github.com/uptrace/bun/dialect/sqlitedialect v1.2.18
@@ -15,6 +17,7 @@ require (
 require (
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
+	github.com/golang/freetype v0.0.0-20170609003504-e2365dfdc4a0 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/jinzhu/inflection v1.0.0 // indirect
 	github.com/mattn/go-isatty v0.0.24 // indirect
@@ -27,6 +30,7 @@ require (
 	github.com/vmihailenco/tagparser/v2 v2.0.0 // indirect
 	go.opentelemetry.io/otel v1.40.0 // indirect
 	go.opentelemetry.io/otel/trace v1.40.0 // indirect
+	golang.org/x/image v0.23.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/tools v0.49.0 // indirect
 	mellium.im/sasl v0.3.2 // indirect

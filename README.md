@@ -6,6 +6,7 @@
 
 ```text
 pkg/identity                 对外 Module、领域类型、schema
+pkg/identity/challenge      可复用的图片和远程 token provider
         ↓
 internal/identity/handler    Huma DTO、路由、cookie、鉴权中间件
         ↓
@@ -24,8 +25,9 @@ mod, err := identity.New(identity.Options{
     Session: identity.SessionOptions{TTL: 30 * 24 * time.Hour},
     HTTP: identity.HTTPOptions{
         RegistrationEnabled: true,
-        // ChallengeProvider is supplied by the host. Set RequireChallenge
-        // when login and registration must solve it.
+        // Use pkg/identity/challenge for the built-in image or remote token
+        // providers, or supply a host-owned implementation. Set
+        // RequireChallenge when login and registration must solve it.
         ChallengeProvider: challengeProvider,
         RequireChallenge: true,
         SecureCookie: true,
@@ -103,9 +105,10 @@ identity_user_roles
 identity_role_permissions
 ```
 
-不包含 `user_external_identities`，也不包含 OAuth、SSH、验证码或审计表。验证码提供方由宿主实现
-`HumanChallengeProvider` 后注入；identity 负责配置、挑战路由、登录/注册校验和业务侧复用的
-`CreateChallenge`/`VerifyChallenge`。宿主的业务权限编码写入 identity 的通用 permission 表，但权限语义仍由宿主定义。
+不包含 `user_external_identities`，也不包含 OAuth、SSH、验证码或审计表。通用的图片和远程 token
+验证码 provider 位于 `pkg/identity/challenge`；宿主也可以实现 `HumanChallengeProvider` 后注入。
+identity 负责配置、挑战路由、登录/注册校验和业务侧复用的 `CreateChallenge`/`VerifyChallenge`。
+宿主的业务权限编码写入 identity 的通用 permission 表，但权限语义仍由宿主定义。
 
 PostgreSQL 最低支持版本为 18；生产环境由宿主 migration runner 管理 schema
 版本，本包不自动迁移或创建表。PostgreSQL schema 会使用
