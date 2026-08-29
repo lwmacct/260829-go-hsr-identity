@@ -241,6 +241,98 @@ func TestHumaRoutes(t *testing.T) {
 	}
 }
 
+type testHumanChallengeProvider struct{}
+
+func (testHumanChallengeProvider) Name() string { return "image" }
+
+func (testHumanChallengeProvider) PublicConfig() identity.HumanChallengeConfig {
+	return identity.HumanChallengeConfig{Provider: "image"}
+}
+
+func (testHumanChallengeProvider) Create(context.Context, identity.RequestMeta) (*identity.HumanChallenge, error) {
+	return &identity.HumanChallenge{
+		Provider:    "image",
+		ChallengeID: "test-challenge",
+		Image:       "data:image/png;base64,",
+		ExpiresAt:   time.Now().UTC().Add(time.Minute),
+	}, nil
+}
+
+func (testHumanChallengeProvider) Verify(_ context.Context, response identity.HumanChallengeResponse, _ identity.RequestMeta) error {
+	if response.Provider != "image" || response.ChallengeID != "test-challenge" || response.Answer != "2468" {
+		return identity.ErrHumanChallengeInvalid
+	}
+	return nil
+}
+
+func TestHumanChallengeRoutesAndModuleContract(t *testing.T) {
+	_, db := testModule(t)
+	m, err := identity.New(identity.Options{
+		DB:       db,
+		Password: identity.PasswordOptions{Policy: identity.PasswordPolicy{MinLength: 8}},
+		HTTP: identity.HTTPOptions{
+			RegistrationEnabled: true,
+			ChallengeProvider:   testHumanChallengeProvider{},
+			RequireChallenge:    true,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got := m.ChallengeConfig(); !got.Required || got.Provider != "image" {
+		t.Fatalf("challenge config = %#v", got)
+	}
+	if err := m.VerifyChallenge(context.Background(), identity.HumanChallengeResponse{Provider: "turnstile", Token: "ok"}, identity.RequestMeta{}); !errors.Is(err, identity.ErrHumanChallengeInvalid) {
+		t.Fatalf("provider mismatch error = %v", err)
+	}
+
+	mux := http.NewServeMux()
+	api := humago.New(mux, huma.DefaultConfig("test", "1.0.0"))
+	m.Register(api)
+
+	configReq := httptest.NewRequest(http.MethodGet, "/auth/config", nil)
+	configRes := httptest.NewRecorder()
+	mux.ServeHTTP(configRes, configReq)
+	if configRes.Code != http.StatusOK {
+		t.Fatalf("config status = %d body = %s", configRes.Code, configRes.Body.String())
+	}
+	var configBody struct {
+		RegistrationEnabled bool `json:"registrationEnabled"`
+		Challenge           struct {
+			Provider string `json:"provider"`
+			Required bool   `json:"required"`
+		} `json:"challenge"`
+	}
+	if err := json.Unmarshal(configRes.Body.Bytes(), &configBody); err != nil {
+		t.Fatal(err)
+	}
+	if !configBody.RegistrationEnabled || configBody.Challenge.Provider != "image" || !configBody.Challenge.Required {
+		t.Fatalf("config body = %#v", configBody)
+	}
+
+	challengeReq := httptest.NewRequest(http.MethodPost, "/auth/challenges", nil)
+	challengeRes := httptest.NewRecorder()
+	mux.ServeHTTP(challengeRes, challengeReq)
+	if challengeRes.Code != http.StatusOK {
+		t.Fatalf("challenge status = %d body = %s", challengeRes.Code, challengeRes.Body.String())
+	}
+
+	register := func(body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/auth/register", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		res := httptest.NewRecorder()
+		mux.ServeHTTP(res, req)
+		return res
+	}
+	if res := register(`{"handle":"challenge-user","password":"correct horse"}`); res.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("missing challenge status = %d body = %s", res.Code, res.Body.String())
+	}
+	if res := register(`{"handle":"challenge-user","password":"correct horse","challenge":{"provider":"image","challengeId":"test-challenge","answer":"2468"}}`); res.Code != http.StatusCreated {
+		t.Fatalf("valid challenge status = %d body = %s", res.Code, res.Body.String())
+	}
+}
+
 func TestBearerAuthentication(t *testing.T) {
 	m, _ := testModule(t)
 	ctx := context.Background()

@@ -1,6 +1,6 @@
 # identity
 
-`identity` 是一个面向 Go 1.27、PostgreSQL 18+ 应用的身份与访问控制模块，直接使用宿主已经采用的 Bun 和 Huma。它提供用户、Argon2id 密码、不可逆 Session token、账户生命周期、通用 RBAC 和基础 HTTP API；OAuth、SSH key、验证码、审计及业务关系由宿主项目拥有。
+`identity` 是一个面向 Go 1.27、PostgreSQL 18+ 应用的身份与访问控制模块，直接使用宿主已经采用的 Bun 和 Huma。它提供用户、Argon2id 密码、不可逆 Session token、账户生命周期、通用 RBAC、人机挑战契约和基础 HTTP API；OAuth、SSH key、审计及业务关系由宿主项目拥有。
 
 ## 分层
 
@@ -24,6 +24,10 @@ mod, err := identity.New(identity.Options{
     Session: identity.SessionOptions{TTL: 30 * 24 * time.Hour},
     HTTP: identity.HTTPOptions{
         RegistrationEnabled: true,
+        // ChallengeProvider is supplied by the host. Set RequireChallenge
+        // when login and registration must solve it.
+        ChallengeProvider: challengeProvider,
+        RequireChallenge: true,
         SecureCookie: true,
     },
 })
@@ -73,6 +77,8 @@ Session token 只在创建时返回，数据库只保存 SHA-256 hash。Session 
 POST  /auth/register
 POST  /auth/login
 POST  /auth/logout
+GET   /auth/config
+POST  /auth/challenges
 GET   /auth/session
 PATCH /auth/password
 POST  /auth/sessions/revoke-all
@@ -97,7 +103,9 @@ identity_user_roles
 identity_role_permissions
 ```
 
-不包含 `user_external_identities`，也不包含 OAuth、SSH、验证码或审计表。宿主的业务权限编码写入 identity 的通用 permission 表，但权限语义仍由宿主定义。
+不包含 `user_external_identities`，也不包含 OAuth、SSH、验证码或审计表。验证码提供方由宿主实现
+`HumanChallengeProvider` 后注入；identity 负责配置、挑战路由、登录/注册校验和业务侧复用的
+`CreateChallenge`/`VerifyChallenge`。宿主的业务权限编码写入 identity 的通用 permission 表，但权限语义仍由宿主定义。
 
 PostgreSQL 最低支持版本为 18；生产环境由宿主 migration runner 管理 schema
 版本，本包不自动迁移或创建表。PostgreSQL schema 会使用

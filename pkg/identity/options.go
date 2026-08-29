@@ -109,6 +109,11 @@ type HTTPOptions struct {
 	SameSite            http.SameSite
 	TokenExtractor      func(*http.Request) string
 	RequestMetaResolver RequestMetaResolver
+	// ChallengeProvider enables the public challenge endpoints. When
+	// RequireChallenge is true, login and registration require a valid
+	// response from this provider.
+	ChallengeProvider HumanChallengeProvider
+	RequireChallenge  bool
 }
 
 type Options struct {

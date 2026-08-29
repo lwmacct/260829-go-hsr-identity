@@ -38,6 +38,10 @@ type Clock = domain.Clock
 type HandlePolicy = domain.HandlePolicy
 type HandlePolicyFunc = domain.HandlePolicyFunc
 type ValidationError = domain.ValidationError
+type HumanChallengeConfig = domain.HumanChallengeConfig
+type HumanChallenge = domain.HumanChallenge
+type HumanChallengeResponse = domain.HumanChallengeResponse
+type HumanChallengeProvider = domain.HumanChallengeProvider
 
 const (
 	StateActive                = domain.StateActive
@@ -63,23 +67,26 @@ const (
 )
 
 var (
-	ErrInvalid            = domain.ErrInvalid
-	ErrNotFound           = domain.ErrNotFound
-	ErrConflict           = domain.ErrConflict
-	ErrInvalidHandle      = domain.ErrInvalidHandle
-	ErrHandleTaken        = domain.ErrHandleTaken
-	ErrInvalidUser        = domain.ErrInvalidUser
-	ErrDisabled           = domain.ErrDisabled
-	ErrEmptySelection     = domain.ErrEmptySelection
-	ErrInvalidState       = domain.ErrInvalidState
-	ErrInvalidRequestMeta = domain.ErrInvalidRequestMeta
-	ErrUnauthenticated    = domain.ErrUnauthenticated
-	ErrExpired            = domain.ErrExpired
-	ErrRevoked            = domain.ErrRevoked
-	ErrBindingMismatch    = domain.ErrBindingMismatch
-	ErrWeakPassword       = domain.ErrWeakPassword
-	ErrUnsupported        = domain.ErrUnsupported
-	ErrForbidden          = domain.ErrForbidden
+	ErrInvalid                     = domain.ErrInvalid
+	ErrNotFound                    = domain.ErrNotFound
+	ErrConflict                    = domain.ErrConflict
+	ErrInvalidHandle               = domain.ErrInvalidHandle
+	ErrHandleTaken                 = domain.ErrHandleTaken
+	ErrInvalidUser                 = domain.ErrInvalidUser
+	ErrDisabled                    = domain.ErrDisabled
+	ErrEmptySelection              = domain.ErrEmptySelection
+	ErrInvalidState                = domain.ErrInvalidState
+	ErrInvalidRequestMeta          = domain.ErrInvalidRequestMeta
+	ErrUnauthenticated             = domain.ErrUnauthenticated
+	ErrExpired                     = domain.ErrExpired
+	ErrRevoked                     = domain.ErrRevoked
+	ErrBindingMismatch             = domain.ErrBindingMismatch
+	ErrWeakPassword                = domain.ErrWeakPassword
+	ErrUnsupported                 = domain.ErrUnsupported
+	ErrForbidden                   = domain.ErrForbidden
+	ErrHumanChallengeInvalid       = domain.ErrHumanChallengeInvalid
+	ErrHumanChallengeUnsupported   = domain.ErrHumanChallengeUnsupported
+	ErrHumanChallengeLimitExceeded = domain.ErrHumanChallengeLimitExceeded
 )
 
 var LowerASCIIHandlePolicy = domain.LowerASCIIHandlePolicy

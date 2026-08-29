@@ -28,6 +28,8 @@ type Config struct {
 	TokenExtractor      func(*http.Request) string
 	RequestMetaResolver func(*http.Request) (domain.RequestMeta, error)
 	Authorizer          func(context.Context, *domain.Principal, string) error
+	ChallengeProvider   domain.HumanChallengeProvider
+	RequireChallenge    bool
 }
 
 type Services struct {
@@ -78,6 +80,8 @@ func (e *Endpoint) Register(api huma.API) {
 	huma.Register(auth, huma.Operation{OperationID: "identity-register", Method: http.MethodPost, Path: "/register", DefaultStatus: http.StatusCreated, Tags: []string{"Identity"}}, e.register)
 	huma.Register(auth, huma.Operation{OperationID: "identity-login", Method: http.MethodPost, Path: "/login", Tags: []string{"Identity"}}, e.login)
 	huma.Register(auth, huma.Operation{OperationID: "identity-logout", Method: http.MethodPost, Path: "/logout", Tags: []string{"Identity"}}, e.logout)
+	huma.Register(auth, huma.Operation{OperationID: "identity-config", Method: http.MethodGet, Path: "/config", Tags: []string{"Identity"}}, e.configOutput)
+	huma.Register(auth, huma.Operation{OperationID: "identity-create-challenge", Method: http.MethodPost, Path: "/challenges", Tags: []string{"Identity"}}, e.createChallenge)
 	protected := huma.NewGroup(auth)
 	protected.UseMiddleware(e.RequiredMiddleware(api))
 	huma.Register(protected, huma.Operation{OperationID: "identity-current-session", Method: http.MethodGet, Path: "/session", Tags: []string{"Identity"}}, e.currentSession)
@@ -89,6 +93,54 @@ func (e *Endpoint) Register(api huma.API) {
 			e.registerAuthorization(api)
 		}
 	}
+}
+
+func (e *Endpoint) verifyChallenge(ctx context.Context, response *challengeBody) error {
+	if !e.config.RequireChallenge {
+		return nil
+	}
+	if e.config.ChallengeProvider == nil || response == nil {
+		return domain.ErrHumanChallengeInvalid
+	}
+	if strings.TrimSpace(response.Provider) == "" || strings.TrimSpace(response.Provider) != strings.TrimSpace(e.config.ChallengeProvider.Name()) {
+		return domain.ErrHumanChallengeInvalid
+	}
+	if err := requestMetaErrorFromContext(ctx); err != nil {
+		return err
+	}
+	if err := e.config.ChallengeProvider.Verify(ctx, response.domain(), requestMetaFromContext(ctx)); err != nil {
+		return domain.ErrHumanChallengeInvalid
+	}
+	return nil
+}
+
+func (e *Endpoint) configOutput(_ context.Context, _ *struct{}) (*struct{ Body configView }, error) {
+	body := configView{RegistrationEnabled: e.config.RegistrationEnabled}
+	if e.config.ChallengeProvider != nil {
+		public := e.config.ChallengeProvider.PublicConfig()
+		body.Challenge = &humanChallengeConfigView{Provider: public.Provider, SiteKey: public.SiteKey, Required: e.config.RequireChallenge}
+	}
+	return &struct{ Body configView }{Body: body}, nil
+}
+
+func (e *Endpoint) createChallenge(ctx context.Context, _ *struct{}) (*struct{ Body challengeView }, error) {
+	if e.config.ChallengeProvider == nil {
+		return nil, huma.Error400BadRequest("challenge provider unsupported")
+	}
+	if err := requestMetaErrorFromContext(ctx); err != nil {
+		return nil, mapError(err, false)
+	}
+	challenge, err := e.config.ChallengeProvider.Create(ctx, requestMetaFromContext(ctx))
+	if err != nil {
+		if errors.Is(err, domain.ErrHumanChallengeLimitExceeded) {
+			return nil, huma.Error429TooManyRequests("too many challenges")
+		}
+		if errors.Is(err, domain.ErrHumanChallengeUnsupported) {
+			return nil, huma.Error400BadRequest("challenge creation unsupported")
+		}
+		return nil, huma.Error500InternalServerError("challenge creation failed")
+	}
+	return &struct{ Body challengeView }{Body: challengeViewFromDomain(challenge)}, nil
 }
 
 func (e *Endpoint) OptionalMiddleware() func(huma.Context, func(huma.Context)) {
@@ -244,6 +296,13 @@ func mapError(err error, login bool) error {
 		return huma.Error409Conflict("identity conflict")
 	case errors.Is(err, domain.ErrInvalid), errors.Is(err, domain.ErrWeakPassword), errors.Is(err, domain.ErrInvalidState), errors.Is(err, domain.ErrInvalidRequestMeta):
 		return huma.Error422UnprocessableEntity("invalid identity request")
+	case errors.Is(err, domain.ErrHumanChallengeInvalid):
+		if login {
+			return huma.Error401Unauthorized("invalid challenge")
+		}
+		return huma.Error422UnprocessableEntity("invalid challenge")
+	case errors.Is(err, domain.ErrHumanChallengeUnsupported):
+		return huma.Error400BadRequest("challenge provider unsupported")
 	default:
 		return huma.Error500InternalServerError("internal server error")
 	}

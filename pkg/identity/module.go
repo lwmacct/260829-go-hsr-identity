@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/danielgtaylor/huma/v2"
@@ -15,12 +16,14 @@ import (
 )
 
 type Module struct {
-	users         *service.UserService
-	password      *service.PasswordService
-	session       *service.SessionService
-	authorization *service.AuthorizationService
-	account       *service.AccountService
-	handler       *handler.Endpoint
+	users             *service.UserService
+	password          *service.PasswordService
+	session           *service.SessionService
+	authorization     *service.AuthorizationService
+	account           *service.AccountService
+	challenge         HumanChallengeProvider
+	challengeRequired bool
+	handler           *handler.Endpoint
 }
 
 func New(options Options) (*Module, error) {
@@ -118,9 +121,11 @@ func New(options Options) (*Module, error) {
 		SameSite:            options.HTTP.SameSite,
 		TokenExtractor:      options.HTTP.TokenExtractor,
 		RequestMetaResolver: options.HTTP.RequestMetaResolver,
+		ChallengeProvider:   options.HTTP.ChallengeProvider,
+		RequireChallenge:    options.HTTP.RequireChallenge,
 		Authorizer:          authorizer,
 	}, handler.Services{Users: users, Passwords: password, Sessions: session, Accounts: account, Authorization: authorization})
-	return &Module{users: users, password: password, session: session, authorization: authorization, account: account, handler: endpoint}, nil
+	return &Module{users: users, password: password, session: session, authorization: authorization, account: account, challenge: options.HTTP.ChallengeProvider, challengeRequired: options.HTTP.RequireChallenge, handler: endpoint}, nil
 }
 
 func MustNew(options Options) *Module {
@@ -200,6 +205,39 @@ func (m *Module) RevokeSession(ctx context.Context, token, reason string, meta R
 }
 func (m *Module) ChangePassword(ctx context.Context, userID UserID, current, next string) error {
 	return m.account.ChangePassword(ctx, userID, current, next)
+}
+
+// ChallengeConfig returns the provider configuration exposed to clients.
+func (m *Module) ChallengeConfig() HumanChallengeConfig {
+	if m == nil || m.challenge == nil {
+		return HumanChallengeConfig{}
+	}
+	config := m.challenge.PublicConfig()
+	config.Required = m.challengeRequired
+	return config
+}
+
+// CreateChallenge creates a provider-specific challenge for a client.
+func (m *Module) CreateChallenge(ctx context.Context, meta RequestMeta) (*HumanChallenge, error) {
+	if m == nil || m.challenge == nil {
+		return nil, ErrHumanChallengeUnsupported
+	}
+	return m.challenge.Create(ctx, meta)
+}
+
+// VerifyChallenge validates a provider response. Hosts can use this for
+// protected actions such as resource trials in addition to login flows.
+func (m *Module) VerifyChallenge(ctx context.Context, response HumanChallengeResponse, meta RequestMeta) error {
+	if m == nil || m.challenge == nil {
+		return ErrHumanChallengeUnsupported
+	}
+	if strings.TrimSpace(response.Provider) == "" || strings.TrimSpace(response.Provider) != strings.TrimSpace(m.challenge.Name()) {
+		return ErrHumanChallengeInvalid
+	}
+	if err := m.challenge.Verify(ctx, response, meta); err != nil {
+		return ErrHumanChallengeInvalid
+	}
+	return nil
 }
 func (m *Module) ResetPassword(ctx context.Context, userID UserID, next string) error {
 	return m.account.ResetPassword(ctx, userID, next)

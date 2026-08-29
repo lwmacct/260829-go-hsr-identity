@@ -10,8 +10,9 @@ import (
 )
 
 type credentialsBody struct {
-	Handle   string `json:"handle" minLength:"1"`
-	Password string `json:"password" minLength:"1"`
+	Challenge *challengeBody `json:"challenge,omitempty"`
+	Handle    string         `json:"handle" minLength:"1"`
+	Password  string         `json:"password" minLength:"1"`
 }
 type credentialsInput struct{ Body credentialsBody }
 type passwordBody struct {
@@ -48,6 +49,9 @@ func (e *Endpoint) register(ctx context.Context, input *credentialsInput) (*sess
 	if err := requestMetaErrorFromContext(ctx); err != nil {
 		return nil, mapError(err, false)
 	}
+	if err := e.verifyChallenge(ctx, input.Body.Challenge); err != nil {
+		return nil, mapError(err, false)
+	}
 	user, issued, err := e.services.Accounts.RegisterAndLogin(ctx, domain.UserCreateInput{Handle: input.Body.Handle}, input.Body.Password, requestMetaFromContext(ctx))
 	if err != nil {
 		return nil, mapError(err, false)
@@ -58,6 +62,9 @@ func (e *Endpoint) register(ctx context.Context, input *credentialsInput) (*sess
 func (e *Endpoint) login(ctx context.Context, input *credentialsInput) (*sessionResponse, error) {
 	if err := requestMetaErrorFromContext(ctx); err != nil {
 		return nil, mapError(err, false)
+	}
+	if err := e.verifyChallenge(ctx, input.Body.Challenge); err != nil {
+		return nil, mapError(err, true)
 	}
 	user, issued, err := e.services.Accounts.Login(ctx, input.Body.Handle, input.Body.Password, requestMetaFromContext(ctx))
 	if err != nil {
