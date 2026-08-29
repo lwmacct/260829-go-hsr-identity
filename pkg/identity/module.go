@@ -46,6 +46,7 @@ func New(options Options) (*Module, error) {
 	if err != nil {
 		return nil, err
 	}
+	users.SetBeforeDeleteHook(options.BeforeDeleteUsers)
 	authorization, err := service.NewAuthorizationService(store, store, store, now, options.Authorization.DefaultRoleCodes)
 	if err != nil {
 		return nil, err

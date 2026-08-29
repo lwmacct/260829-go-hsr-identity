@@ -338,6 +338,11 @@ type UserDirectory interface {
 	UserByUsername(context.Context, string) (*User, error)
 }
 
+// UserDeleteHook runs before identity records are deleted. A host can use it
+// to remove dependent business records that identity cannot know about. If it
+// returns an error, the identity deletion is aborted.
+type UserDeleteHook func(context.Context, []UserID) error
+
 func DirectoryFromRepository(repository UserRepository) UserDirectory {
 	if repository == nil {
 		return nil

@@ -117,14 +117,15 @@ type HTTPOptions struct {
 }
 
 type Options struct {
-	DB             *bun.DB
-	Clock          Clock
-	UsernamePolicy UsernamePolicy
-	Password       PasswordOptions
-	Session        SessionOptions
-	Authorization  AuthorizationOptions
-	HTTP           HTTPOptions
-	Authorizer     Authorizer
+	DB                *bun.DB
+	Clock             Clock
+	UsernamePolicy    UsernamePolicy
+	Password          PasswordOptions
+	Session           SessionOptions
+	Authorization     AuthorizationOptions
+	HTTP              HTTPOptions
+	Authorizer        Authorizer
+	BeforeDeleteUsers UserDeleteHook
 }
 
 type Authorizer func(context.Context, *Principal, string) error

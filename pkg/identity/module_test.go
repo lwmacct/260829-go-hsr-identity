@@ -95,6 +95,59 @@ func TestModuleLifecycle(t *testing.T) {
 	}
 }
 
+func TestModuleDeleteUsersCallsBeforeDeleteHook(t *testing.T) {
+	_, db := testModule(t)
+	ctx := context.Background()
+	var got []identity.UserID
+	m, err := identity.New(identity.Options{
+		DB:       db,
+		Password: identity.PasswordOptions{Policy: identity.PasswordPolicy{MinLength: 8}},
+		BeforeDeleteUsers: func(_ context.Context, ids []identity.UserID) error {
+			got = append(got, ids...)
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	u, err := m.RegisterUser(ctx, identity.UserCreateInput{Username: "hook-user"}, "correct horse")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.DeleteUsers(ctx, []identity.UserID{u.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0] != u.ID {
+		t.Fatalf("delete hook ids = %#v, want [%s]", got, u.ID)
+	}
+}
+
+func TestModuleDeleteUsersAbortsWhenBeforeDeleteHookFails(t *testing.T) {
+	_, db := testModule(t)
+	ctx := context.Background()
+	want := errors.New("dependent cleanup failed")
+	m, err := identity.New(identity.Options{
+		DB:       db,
+		Password: identity.PasswordOptions{Policy: identity.PasswordPolicy{MinLength: 8}},
+		BeforeDeleteUsers: func(context.Context, []identity.UserID) error {
+			return want
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	u, err := m.RegisterUser(ctx, identity.UserCreateInput{Username: "hook-failure"}, "correct horse")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.DeleteUsers(ctx, []identity.UserID{u.ID}); !errors.Is(err, want) {
+		t.Fatalf("delete error = %v, want %v", err, want)
+	}
+	if _, err := m.UserByID(ctx, u.ID); err != nil {
+		t.Fatalf("user after aborted delete = %v", err)
+	}
+}
+
 func TestBootstrapUserCreatesOnlyUnassignedRole(t *testing.T) {
 	m, _ := testModule(t)
 	ctx := context.Background()

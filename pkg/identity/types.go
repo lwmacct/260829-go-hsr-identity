@@ -32,6 +32,7 @@ type SessionRepository = domain.SessionRepository
 type UnitOfWork = domain.UnitOfWork
 type TxManager = domain.TxManager
 type UserDirectory = domain.UserDirectory
+type UserDeleteHook = domain.UserDeleteHook
 type SessionResolver = domain.SessionResolver
 type AuthorizationRepository = domain.AuthorizationRepository
 type ClaimsResolver = domain.ClaimsResolver

@@ -12,10 +12,11 @@ import (
 )
 
 type UserService struct {
-	repo     domain.UserRepository
-	tx       domain.TxManager
-	username domain.UsernamePolicy
-	now      domain.Clock
+	repo             domain.UserRepository
+	tx               domain.TxManager
+	username         domain.UsernamePolicy
+	now              domain.Clock
+	beforeDeleteHook domain.UserDeleteHook
 }
 
 func NewUserService(repo domain.UserRepository, tx domain.TxManager, username domain.UsernamePolicy, now domain.Clock) (*UserService, error) {
@@ -30,6 +31,13 @@ func NewUserService(repo domain.UserRepository, tx domain.TxManager, username do
 	}
 	return &UserService{repo: repo, tx: tx, username: username, now: now}, nil
 }
+
+func (s *UserService) SetBeforeDeleteHook(hook domain.UserDeleteHook) {
+	if s != nil {
+		s.beforeDeleteHook = hook
+	}
+}
+
 func (s *UserService) Create(ctx context.Context, in UserCreateInput) (*domain.User, error) {
 	h, e := s.username.Normalize(in.Username)
 	if e != nil {
@@ -151,6 +159,11 @@ func (s *UserService) DeleteUsers(ctx context.Context, ids []domain.UserID) erro
 	var err error
 	if ids, err = normalizeUserIDs(ids); err != nil {
 		return err
+	}
+	if s.beforeDeleteHook != nil {
+		if err := s.beforeDeleteHook(ctx, ids); err != nil {
+			return err
+		}
 	}
 	if s.tx == nil {
 		return errors.New("identity: transaction manager is required for deleting users")
