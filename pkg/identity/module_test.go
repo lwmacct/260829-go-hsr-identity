@@ -95,6 +95,55 @@ func TestModuleLifecycle(t *testing.T) {
 	}
 }
 
+func TestBootstrapUserCreatesOnlyUnassignedRole(t *testing.T) {
+	m, _ := testModule(t)
+	ctx := context.Background()
+	if _, err := m.EnsureRole(ctx, identity.RoleInput{Code: "admin", Name: "Administrator", System: true}); err != nil {
+		t.Fatal(err)
+	}
+
+	admin, err := m.BootstrapUser(ctx, identity.BootstrapInput{
+		User:      identity.UserCreateInput{Handle: "Admin", DisplayName: "Administrator"},
+		Password:  "correct horse",
+		RoleCodes: []string{" ADMIN "},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if admin.Handle != "admin" || admin.DisplayName != "Administrator" {
+		t.Fatalf("bootstrapped user = %#v", admin)
+	}
+	if _, err := m.Authenticate(ctx, "admin", "correct horse"); err != nil {
+		t.Fatal(err)
+	}
+	roles, err := m.UserRoles(ctx, admin.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(roles) != 1 || roles[0].Code != "admin" {
+		t.Fatalf("admin roles = %#v", roles)
+	}
+
+	if _, err := m.BootstrapUser(ctx, identity.BootstrapInput{
+		User:      identity.UserCreateInput{Handle: "another-admin"},
+		Password:  "correct horse",
+		RoleCodes: []string{"admin"},
+	}); !errors.Is(err, identity.ErrBootstrapCompleted) {
+		t.Fatalf("second bootstrap error = %v", err)
+	}
+}
+
+func TestBootstrapUserRequiresRole(t *testing.T) {
+	m, _ := testModule(t)
+	_, err := m.BootstrapUser(context.Background(), identity.BootstrapInput{
+		User:     identity.UserCreateInput{Handle: "admin"},
+		Password: "correct horse",
+	})
+	if err == nil {
+		t.Fatal("bootstrap without a role succeeded")
+	}
+}
+
 func TestLoginUpdatesLastLoginAndPasswordChangeRevokesSessions(t *testing.T) {
 	m, _ := testModule(t)
 	ctx := context.Background()

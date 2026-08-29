@@ -24,6 +24,7 @@ type PasswordCredential = domain.PasswordCredential
 type SessionRecord = domain.SessionRecord
 type IssuedSession = domain.IssuedSession
 type UserCreateInput = domain.UserCreateInput
+type BootstrapInput = domain.BootstrapInput
 type UserUpdateProfileInput = domain.UserUpdateProfileInput
 type UserRepository = domain.UserRepository
 type PasswordRepository = domain.PasswordRepository
@@ -72,6 +73,7 @@ var (
 	ErrConflict                    = domain.ErrConflict
 	ErrInvalidHandle               = domain.ErrInvalidHandle
 	ErrHandleTaken                 = domain.ErrHandleTaken
+	ErrBootstrapCompleted          = domain.ErrBootstrapCompleted
 	ErrInvalidUser                 = domain.ErrInvalidUser
 	ErrDisabled                    = domain.ErrDisabled
 	ErrEmptySelection              = domain.ErrEmptySelection

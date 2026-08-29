@@ -178,6 +178,12 @@ func (m *Module) ListUsers(ctx context.Context, filter UserFilter) ([]User, int,
 func (m *Module) RegisterUser(ctx context.Context, input UserCreateInput, password string) (*User, error) {
 	return m.account.Register(ctx, input, password)
 }
+
+// BootstrapUser creates the first account for the requested role(s). It is
+// intended for an explicit operator command, not public registration.
+func (m *Module) BootstrapUser(ctx context.Context, input BootstrapInput) (*User, error) {
+	return m.account.BootstrapUser(ctx, input)
+}
 func (m *Module) RegisterAndLogin(ctx context.Context, input UserCreateInput, password string, meta RequestMeta) (*User, *IssuedSession, error) {
 	return m.account.RegisterAndLogin(ctx, input, password, meta)
 }

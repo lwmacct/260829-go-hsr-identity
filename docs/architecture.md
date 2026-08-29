@@ -18,6 +18,11 @@ The dependency direction is one-way: `handler → service → repository → Bun
 
 `repository.Store.WithinTx` creates a Bun transaction and binds all repositories to the same `bun.Tx`. Registration with automatic login, password changes, password resets, external-login Session issuance, disabling users, and deleting users use this boundary. `identity.New` never creates tables.
 
+`Module.BootstrapUser` uses the same transaction boundary. It locks each
+requested role, verifies that no user is assigned to it, and then creates the
+account, password credential, and role bindings atomically. PostgreSQL uses
+`FOR UPDATE`; SQLite upgrades the transaction to a writer lock.
+
 ## Security invariants
 
 - Passwords use Argon2id and are never stored in plaintext.

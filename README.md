@@ -62,7 +62,19 @@ role, err := mod.EnsureRole(ctx, identity.RoleInput{Code: "admin", Name: "Admini
 permission, err := mod.EnsurePermission(ctx, identity.PermissionInput{Code: "relay.api_key.manage", Name: "Manage API keys"})
 err = mod.SetRolePermissions(ctx, role.ID, []string{permission.Code})
 err = mod.SetUserRoles(ctx, user.ID, []string{role.Code})
+
+// Bootstrap an initial privileged account from an explicit operator command:
+user, err := mod.BootstrapUser(ctx, identity.BootstrapInput{
+    User: identity.UserCreateInput{Handle: "admin", DisplayName: "Administrator"},
+    Password: password,
+    RoleCodes: []string{"admin"},
+})
 ```
+
+`BootstrapUser` creates the account, password and requested role bindings in
+one transaction. Every requested role must still be unassigned; a second
+bootstrap attempt returns `identity.ErrBootstrapCompleted` and never changes
+an existing account.
 
 `Authenticate` 只做凭据校验；需要建立登录态时使用 `Login`。`CreateSession`
 用于宿主已经完成 OAuth/SSH 等外部凭据校验的场景，同样会记录

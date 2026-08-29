@@ -3,6 +3,8 @@ package service
 import (
 	"context"
 	"errors"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/lwmacct/260829-go-hsr-identity/pkg/identity/domain"
@@ -50,6 +52,65 @@ func (s *AccountService) Register(ctx context.Context, in UserCreateInput, passw
 		return pw.SetHash(c, u.ID, hash)
 	})
 	return u, e
+}
+
+// BootstrapUser atomically creates the first user for one or more roles. Each
+// role must be unassigned; once any requested role has a user, the operation
+// fails with ErrBootstrapCompleted rather than changing existing privileges.
+func (s *AccountService) BootstrapUser(ctx context.Context, in domain.BootstrapInput) (*domain.User, error) {
+	roleCodes, err := normalizeBootstrapRoleCodes(in.RoleCodes)
+	if err != nil {
+		return nil, err
+	}
+	if in.User.State != "" && in.User.State != domain.StateActive {
+		return nil, domain.ErrInvalidState
+	}
+	if err := s.passwords.Validate(in.User.Handle, in.Password); err != nil {
+		return nil, err
+	}
+	hash, err := s.passwords.Hash(in.Password)
+	if err != nil {
+		return nil, err
+	}
+	var user *domain.User
+	err = s.tx.WithinTx(ctx, func(c context.Context, uow domain.UnitOfWork) error {
+		roleIDs := make([]domain.RoleID, 0, len(roleCodes))
+		for _, code := range roleCodes {
+			role, err := uow.Authorization().LockRoleByCode(c, code)
+			if err != nil {
+				return err
+			}
+			count, err := uow.Authorization().CountRoleUsers(c, role.ID)
+			if err != nil {
+				return err
+			}
+			if count > 0 {
+				return domain.ErrBootstrapCompleted
+			}
+			roleIDs = append(roleIDs, role.ID)
+		}
+
+		users, err := s.userService(uow)
+		if err != nil {
+			return err
+		}
+		user, err = users.Create(c, in.User)
+		if err != nil {
+			return err
+		}
+		passwords, err := s.passwordService(uow)
+		if err != nil {
+			return err
+		}
+		if err := passwords.SetHash(c, user.ID, hash); err != nil {
+			return err
+		}
+		return uow.Authorization().ReplaceUserRoles(c, user.ID, roleIDs)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return user, nil
 }
 
 // RegisterAndLogin atomically creates an account, its password, a Session,
@@ -244,3 +305,25 @@ func (s *AccountService) passwordService(uow domain.UnitOfWork) (*PasswordServic
 }
 
 func timePtr(value time.Time) *time.Time { return &value }
+
+func normalizeBootstrapRoleCodes(codes []string) ([]string, error) {
+	if len(codes) == 0 {
+		return nil, errors.New("identity: at least one bootstrap role is required")
+	}
+	normalized := make([]string, 0, len(codes))
+	seen := make(map[string]struct{}, len(codes))
+	for _, code := range codes {
+		code = strings.ToLower(strings.TrimSpace(code))
+		code, err := normalizeCode(code, "role")
+		if err != nil {
+			return nil, err
+		}
+		if _, ok := seen[code]; ok {
+			continue
+		}
+		seen[code] = struct{}{}
+		normalized = append(normalized, code)
+	}
+	sort.Strings(normalized)
+	return normalized, nil
+}

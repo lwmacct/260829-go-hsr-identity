@@ -165,6 +165,15 @@ type UserCreateInput struct {
 	State       State
 }
 
+// BootstrapInput describes the first privileged account for an application.
+// Role codes are supplied by the host so identity remains independent of any
+// particular administrator role name.
+type BootstrapInput struct {
+	User      UserCreateInput
+	Password  string
+	RoleCodes []string
+}
+
 type UserUpdateProfileInput struct {
 	DisplayName string
 	Email       string
@@ -293,6 +302,10 @@ type AuthorizationRepository interface {
 	ListRoles(context.Context, RoleFilter) ([]Role, int, error)
 	GetRole(context.Context, RoleID) (*Role, error)
 	GetRoleByCode(context.Context, string) (*Role, error)
+	// LockRoleByCode returns a role while holding the transaction lock needed
+	// for one-time bootstrap operations.
+	LockRoleByCode(context.Context, string) (*Role, error)
+	CountRoleUsers(context.Context, RoleID) (int, error)
 	CreateRole(context.Context, Role) (*Role, error)
 	UpdateRole(context.Context, RoleID, RoleInput, time.Time) (*Role, error)
 	DeleteRole(context.Context, RoleID) error
@@ -389,6 +402,7 @@ var (
 	ErrConflict           = errors.New("identity conflict")
 	ErrInvalidHandle      = fmt.Errorf("%w: invalid identity handle", ErrInvalid)
 	ErrHandleTaken        = errors.New("identity handle already taken")
+	ErrBootstrapCompleted = errors.New("identity bootstrap already completed")
 	ErrInvalidUser        = fmt.Errorf("%w: invalid identity user", ErrInvalid)
 	ErrDisabled           = errors.New("identity user disabled")
 	ErrEmptySelection     = errors.New("empty identity selection")
