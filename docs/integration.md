@@ -1,0 +1,20 @@
+# Integration
+
+1. Add this module to the host `go.work` and use a PostgreSQL 18+ Bun database.
+2. Call `identity.ApplySchema` in tests, or add `identity.DatabaseSchema().Models` to the host's schema registry.
+3. Construct one `identity.Module` during application startup.
+4. Call `module.Register(api)` after creating the host Huma API.
+5. Inject the host authorization callback through `Options.Authorizer`.
+6. Keep OAuth, SSH keys, challenges, audit events, and business associations in host-owned tables and services.
+
+Use `module.Login` for password login and `module.CreateSession` after a host-owned
+OAuth/SSH login; both record `last_login_at` transactionally. For trusted reverse
+proxies, configure `HTTP.RequestMetaResolver`; the default resolver only uses
+`RemoteAddr`, `User-Agent`, and `X-Device-ID`.
+
+When `EnableAdminRoutes` is enabled, authorize the stable action constants
+`identity.ActionUserList`, `identity.ActionUserCreate`, `identity.ActionUserRead`,
+`identity.ActionUserUpdate`, `identity.ActionUserResetPassword`, and
+`identity.ActionUserDelete` in the host callback.
+
+The module's table names are `identity_users`, `identity_passwords`, and `identity_sessions`. A host migration should import existing records once and then remove the old identity tables; no compatibility double-write layer is provided.
