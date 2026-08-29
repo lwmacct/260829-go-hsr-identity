@@ -27,6 +27,14 @@ type PasswordHasherRehash interface {
 	NeedsRehash(string) bool
 }
 
+// PasswordHasherSchemes allows a primary hasher to verify explicitly
+// configured secondary schemes and upgrade them after successful login.
+type PasswordHasherSchemes interface {
+	PasswordHasher
+	VerifyScheme(scheme, encoded, value string) bool
+	NeedsRehashScheme(scheme, encoded string) bool
+}
+
 type Argon2idParams struct {
 	Memory      uint32
 	Iterations  uint32

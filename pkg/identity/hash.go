@@ -15,6 +15,8 @@ func HashBytes(value string) []byte {
 // workflows (for example an application-specific admin form) can provision a
 // credential without reimplementing the password format or parameters.
 type Argon2id = service.Argon2id
+type Bcrypt = service.Bcrypt
+type PasswordHasherChain = service.PasswordHasherChain
 
 // NewArgon2id constructs an Argon2id hasher using the module's validated
 // defaults when params is zero-valued.
@@ -26,4 +28,16 @@ func NewArgon2id(params Argon2idParams) (Argon2id, error) {
 		SaltLength:  params.SaltLength,
 		KeyLength:   params.KeyLength,
 	})
+}
+
+func NewBcrypt(cost int) (Bcrypt, error) {
+	return service.NewBcrypt(cost)
+}
+
+func NewPasswordHasherChain(primary PasswordHasher, fallbacks ...PasswordHasher) (PasswordHasherChain, error) {
+	secondary := make([]service.PasswordHasher, len(fallbacks))
+	for i, fallback := range fallbacks {
+		secondary[i] = fallback
+	}
+	return service.NewPasswordHasherChain(primary, secondary...)
 }

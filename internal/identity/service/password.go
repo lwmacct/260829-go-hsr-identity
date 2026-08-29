@@ -15,6 +15,7 @@ import (
 
 	"github.com/lwmacct/260829-go-hsr-identity/pkg/identity/domain"
 	"golang.org/x/crypto/argon2"
+	"golang.org/x/crypto/bcrypt"
 )
 
 const SchemeArgon2id = "argon2id"
@@ -72,6 +73,98 @@ func (h Argon2id) NeedsRehash(encoded string) bool {
 		return true
 	}
 	return params != h.Params
+}
+
+// Bcrypt verifies legacy bcrypt credentials. It is intended to be used as a
+// secondary hasher in PasswordHasherChain; new credentials should use the
+// module's Argon2id primary hasher.
+type Bcrypt struct{ Cost int }
+
+func NewBcrypt(cost int) (Bcrypt, error) {
+	if cost == 0 {
+		cost = bcrypt.DefaultCost
+	}
+	if cost < bcrypt.MinCost || cost > bcrypt.MaxCost {
+		return Bcrypt{}, errors.New("identity: invalid bcrypt cost")
+	}
+	return Bcrypt{Cost: cost}, nil
+}
+
+func (h Bcrypt) Scheme() string { return "bcrypt" }
+
+func (h Bcrypt) Hash(value string) (string, error) {
+	cost := h.Cost
+	if cost == 0 {
+		cost = bcrypt.DefaultCost
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(value), cost)
+	return string(hash), err
+}
+
+func (h Bcrypt) Verify(encoded, value string) bool {
+	return bcrypt.CompareHashAndPassword([]byte(encoded), []byte(value)) == nil
+}
+
+func (h Bcrypt) NeedsRehash(encoded string) bool {
+	cost := h.Cost
+	if cost == 0 {
+		cost = bcrypt.DefaultCost
+	}
+	actual, err := bcrypt.Cost([]byte(encoded))
+	return err != nil || actual != cost
+}
+
+// PasswordHasherChain uses primary for all newly written credentials while
+// allowing explicitly configured secondary schemes to be verified and
+// transparently upgraded.
+type PasswordHasherChain struct {
+	primary  PasswordHasher
+	fallback map[string]PasswordHasher
+}
+
+func NewPasswordHasherChain(primary PasswordHasher, fallbacks ...PasswordHasher) (PasswordHasherChain, error) {
+	if primary == nil || strings.TrimSpace(primary.Scheme()) == "" {
+		return PasswordHasherChain{}, errors.New("identity: primary password hasher is required")
+	}
+	chain := PasswordHasherChain{primary: primary, fallback: make(map[string]PasswordHasher, len(fallbacks))}
+	for _, hasher := range fallbacks {
+		if hasher == nil || strings.TrimSpace(hasher.Scheme()) == "" || hasher.Scheme() == primary.Scheme() {
+			return PasswordHasherChain{}, errors.New("identity: invalid password hasher fallback")
+		}
+		if _, exists := chain.fallback[hasher.Scheme()]; exists {
+			return PasswordHasherChain{}, errors.New("identity: duplicate password hasher scheme")
+		}
+		chain.fallback[hasher.Scheme()] = hasher
+	}
+	return chain, nil
+}
+
+func (h PasswordHasherChain) Scheme() string                    { return h.primary.Scheme() }
+func (h PasswordHasherChain) Hash(value string) (string, error) { return h.primary.Hash(value) }
+func (h PasswordHasherChain) Verify(encoded, value string) bool {
+	return h.primary.Verify(encoded, value)
+}
+func (h PasswordHasherChain) NeedsRehash(encoded string) bool {
+	if rehasher, ok := h.primary.(PasswordHasherRehash); ok {
+		return rehasher.NeedsRehash(encoded)
+	}
+	return false
+}
+func (h PasswordHasherChain) VerifyScheme(scheme, encoded, value string) bool {
+	if scheme == h.primary.Scheme() {
+		return h.primary.Verify(encoded, value)
+	}
+	if fallback := h.fallback[scheme]; fallback != nil {
+		return fallback.Verify(encoded, value)
+	}
+	return false
+}
+func (h PasswordHasherChain) NeedsRehashScheme(scheme, encoded string) bool {
+	if scheme != h.primary.Scheme() {
+		_, supported := h.fallback[scheme]
+		return supported
+	}
+	return h.NeedsRehash(encoded)
 }
 
 func parseArgon2id(encoded string) (Argon2idParams, []byte, []byte, bool) {
@@ -209,10 +302,10 @@ func (s *PasswordService) AuthenticateUser(ctx context.Context, id domain.UserID
 		}
 		return e
 	}
-	if c == nil || c.Scheme != s.hasher.Scheme() || !s.hasher.Verify(c.Hash, value) {
+	if c == nil || !s.verifyCredential(c, value) {
 		return domain.ErrUnauthenticated
 	}
-	if rehasher, ok := s.hasher.(PasswordHasherRehash); ok && rehasher.NeedsRehash(c.Hash) {
+	if s.needsCredentialRehash(c) {
 		hash, err := s.hasher.Hash(value)
 		if err != nil {
 			return err
@@ -222,6 +315,33 @@ func (s *PasswordService) AuthenticateUser(ctx context.Context, id domain.UserID
 		}
 	}
 	return nil
+}
+
+func (s *PasswordService) verifyCredential(c *domain.PasswordCredential, value string) bool {
+	if c == nil {
+		return false
+	}
+	if c.Scheme == s.hasher.Scheme() {
+		return s.hasher.Verify(c.Hash, value)
+	}
+	if schemes, ok := s.hasher.(PasswordHasherSchemes); ok {
+		return schemes.VerifyScheme(c.Scheme, c.Hash, value)
+	}
+	return false
+}
+
+func (s *PasswordService) needsCredentialRehash(c *domain.PasswordCredential) bool {
+	if c == nil {
+		return false
+	}
+	if schemes, ok := s.hasher.(PasswordHasherSchemes); ok {
+		return schemes.NeedsRehashScheme(c.Scheme, c.Hash)
+	}
+	if c.Scheme != s.hasher.Scheme() {
+		return false
+	}
+	rehasher, ok := s.hasher.(PasswordHasherRehash)
+	return ok && rehasher.NeedsRehash(c.Hash)
 }
 func (s *PasswordService) Set(ctx context.Context, id domain.UserID, username, value string) error {
 	if e := s.Validate(username, value); e != nil {

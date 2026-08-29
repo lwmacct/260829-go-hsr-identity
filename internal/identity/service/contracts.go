@@ -31,6 +31,16 @@ type PasswordHasherRehash interface {
 	NeedsRehash(string) bool
 }
 
+// PasswordHasherSchemes is implemented by a hasher that can verify
+// credentials written by more than one scheme. The primary Scheme returned
+// by PasswordHasher is used for new credentials; secondary schemes can be
+// accepted temporarily and upgraded after successful authentication.
+type PasswordHasherSchemes interface {
+	PasswordHasher
+	VerifyScheme(scheme, encoded, value string) bool
+	NeedsRehashScheme(scheme, encoded string) bool
+}
+
 type Argon2idParams struct {
 	Memory      uint32
 	Iterations  uint32

@@ -3,6 +3,8 @@ package service
 import (
 	"strings"
 	"testing"
+
+	"golang.org/x/crypto/bcrypt"
 )
 
 func TestArgon2VerifyRejectsMalformedAndUnsafeParameters(t *testing.T) {
@@ -53,5 +55,30 @@ func TestArgon2NeedsRehash(t *testing.T) {
 	}
 	if current.NeedsRehash(hash) && !current.Verify(hash, "correct horse") {
 		t.Fatal("stale but valid hash did not verify")
+	}
+}
+
+func TestPasswordHasherChainVerifiesAndUpgradesFallback(t *testing.T) {
+	primary, err := NewArgon2id(Argon2idParams{Memory: 8 * 1024, Iterations: 1, Parallelism: 1, SaltLength: 8, KeyLength: 16})
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy, err := NewBcrypt(bcrypt.MinCost)
+	if err != nil {
+		t.Fatal(err)
+	}
+	chain, err := NewPasswordHasherChain(primary, legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hash, err := legacy.Hash("correct horse")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !chain.VerifyScheme(legacy.Scheme(), hash, "correct horse") {
+		t.Fatal("legacy hash did not verify")
+	}
+	if !chain.NeedsRehashScheme(legacy.Scheme(), hash) {
+		t.Fatal("legacy hash was not marked for upgrade")
 	}
 }
