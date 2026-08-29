@@ -118,6 +118,22 @@ func (m *Module) UserByID(ctx context.Context, id UserID) (*User, error) {
 func (m *Module) UserByHandle(ctx context.Context, handle string) (*User, error) {
 	return m.users.UserByHandle(ctx, handle)
 }
+func (m *Module) CreateUser(ctx context.Context, input UserCreateInput) (*User, error) {
+	return m.users.Create(ctx, input)
+}
+func (m *Module) UpdateUserProfile(ctx context.Context, id UserID, input UserUpdateProfileInput) (*User, error) {
+	return m.users.UpdateProfile(ctx, id, input)
+}
+func (m *Module) MarkUserLogin(ctx context.Context, id UserID) error {
+	return m.users.MarkLogin(ctx, id)
+}
+
+// SetPassword provisions or replaces a user's password and revokes existing
+// sessions. It is useful for host-owned administrative account creation where
+// the user row and credential are assembled as separate operations.
+func (m *Module) SetPassword(ctx context.Context, userID UserID, password string) error {
+	return m.account.ResetPassword(ctx, userID, password)
+}
 func (m *Module) ListUsers(ctx context.Context, filter UserFilter) ([]User, int, error) {
 	return m.users.Users(ctx, filter)
 }
