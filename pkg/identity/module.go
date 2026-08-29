@@ -140,6 +140,9 @@ func (m *Module) ListUsers(ctx context.Context, filter UserFilter) ([]User, int,
 func (m *Module) RegisterUser(ctx context.Context, input UserCreateInput, password string) (*User, error) {
 	return m.account.Register(ctx, input, password)
 }
+func (m *Module) RegisterAndLogin(ctx context.Context, input UserCreateInput, password string, meta RequestMeta) (*User, *IssuedSession, error) {
+	return m.account.RegisterAndLogin(ctx, input, password, meta)
+}
 func (m *Module) Authenticate(ctx context.Context, handle, password string) (*User, error) {
 	return m.password.Authenticate(ctx, handle, password)
 }
