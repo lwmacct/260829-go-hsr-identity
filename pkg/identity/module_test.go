@@ -307,8 +307,23 @@ func TestAdminAuthorizerAndResetPolicy(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
+	for _, code := range []string{identity.ActionUserList, identity.ActionUserResetPassword} {
+		if _, err := m.EnsurePermission(ctx, identity.PermissionInput{Code: code, Name: code, System: true}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	role, err := m.EnsureRole(ctx, identity.RoleInput{Code: "test-admin", Name: "Test Admin", System: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.SetRolePermissions(ctx, role.ID, []string{identity.ActionUserList, identity.ActionUserResetPassword}); err != nil {
+		t.Fatal(err)
+	}
 	admin, err := m.RegisterUser(ctx, identity.UserCreateInput{Handle: "admin-user"}, "correct horse")
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.SetUserRoles(ctx, admin.ID, []string{"test-admin"}); err != nil {
 		t.Fatal(err)
 	}
 	target, err := m.RegisterUser(ctx, identity.UserCreateInput{Handle: "target-password"}, "correct horse")
@@ -342,6 +357,43 @@ func TestAdminAuthorizerAndResetPolicy(t *testing.T) {
 	}
 	if actions[len(actions)-1] != identity.ActionUserResetPassword {
 		t.Fatalf("reset action = %q", actions[len(actions)-1])
+	}
+}
+
+func TestRBACClaimsAndDefaultRoles(t *testing.T) {
+	_, db := testModule(t)
+	ctx := context.Background()
+	m := identity.MustNew(identity.Options{DB: db, Authorization: identity.AuthorizationOptions{DefaultRoleCodes: []string{"member"}}, Password: identity.PasswordOptions{Policy: identity.PasswordPolicy{MinLength: 8}}})
+	if _, err := m.EnsurePermission(ctx, identity.PermissionInput{Code: "relay.read", Name: "Read", System: true}); err != nil {
+		t.Fatal(err)
+	}
+	role, err := m.EnsureRole(ctx, identity.RoleInput{Code: "member", Name: "Member", System: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.SetRolePermissions(ctx, role.ID, []string{"relay.read"}); err != nil {
+		t.Fatal(err)
+	}
+	user, err := m.RegisterUser(ctx, identity.UserCreateInput{Handle: "rbac-user"}, "correct horse")
+	if err != nil {
+		t.Fatal(err)
+	}
+	issued, err := m.CreateSession(ctx, user.ID, identity.RequestMeta{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	principal, err := m.ResolveSession(ctx, issued.Token, identity.RequestMeta{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !m.HasPermission(principal, "relay.read") || m.HasPermission(principal, "relay.write") {
+		t.Fatalf("unexpected claims: %#v", principal.Claims)
+	}
+	if err := m.Authorize(ctx, principal, "relay.read"); err != nil {
+		t.Fatal(err)
+	}
+	if !errors.Is(m.Authorize(ctx, principal, "relay.write"), identity.ErrForbidden) {
+		t.Fatalf("missing permission error = %v", err)
 	}
 }
 

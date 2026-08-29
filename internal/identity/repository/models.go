@@ -68,5 +68,71 @@ func (*SessionModel) BeforeCreateTable(_ context.Context, query *bun.CreateTable
 	return nil
 }
 
+type RoleModel struct {
+	bun.BaseModel `bun:"table:identity_roles,alias:r"`
+	ID            RoleID    `bun:"id,pk,type:uuid"`
+	Code          string    `bun:"code,notnull,unique"`
+	Name          string    `bun:"name,notnull"`
+	Description   string    `bun:"description,notnull"`
+	System        bool      `bun:"system,notnull"`
+	CreatedAt     time.Time `bun:"created_at,notnull"`
+	UpdatedAt     time.Time `bun:"updated_at,notnull"`
+}
+
+func (*RoleModel) BeforeCreateTable(_ context.Context, query *bun.CreateTableQuery) error {
+	if query.Dialect().Name().String() == "pg" {
+		query.ColumnExpr("CHECK (uuid_extract_version(id) = 7)")
+	}
+	query.ColumnExpr("CHECK (code <> '')")
+	return nil
+}
+
+type PermissionModel struct {
+	bun.BaseModel `bun:"table:identity_permissions,alias:p"`
+	ID            PermissionID `bun:"id,pk,type:uuid"`
+	Code          string       `bun:"code,notnull,unique"`
+	Name          string       `bun:"name,notnull"`
+	Description   string       `bun:"description,notnull"`
+	System        bool         `bun:"system,notnull"`
+	CreatedAt     time.Time    `bun:"created_at,notnull"`
+	UpdatedAt     time.Time    `bun:"updated_at,notnull"`
+}
+
+func (*PermissionModel) BeforeCreateTable(_ context.Context, query *bun.CreateTableQuery) error {
+	if query.Dialect().Name().String() == "pg" {
+		query.ColumnExpr("CHECK (uuid_extract_version(id) = 7)")
+	}
+	query.ColumnExpr("CHECK (code <> '')")
+	return nil
+}
+
+type UserRoleModel struct {
+	bun.BaseModel `bun:"table:identity_user_roles,alias:ur"`
+	UserID        UserID    `bun:"user_id,type:uuid,pk"`
+	RoleID        RoleID    `bun:"role_id,type:uuid,pk"`
+	CreatedAt     time.Time `bun:"created_at,notnull"`
+}
+
+func (*UserRoleModel) BeforeCreateTable(_ context.Context, query *bun.CreateTableQuery) error {
+	query.ForeignKey("(user_id) REFERENCES identity_users (id) ON DELETE CASCADE")
+	query.ForeignKey("(role_id) REFERENCES identity_roles (id) ON DELETE CASCADE")
+	return nil
+}
+
+type RolePermissionModel struct {
+	bun.BaseModel `bun:"table:identity_role_permissions,alias:rp"`
+	RoleID        RoleID       `bun:"role_id,type:uuid,pk"`
+	PermissionID  PermissionID `bun:"permission_id,type:uuid,pk"`
+	CreatedAt     time.Time    `bun:"created_at,notnull"`
+}
+
+func (*RolePermissionModel) BeforeCreateTable(_ context.Context, query *bun.CreateTableQuery) error {
+	query.ForeignKey("(role_id) REFERENCES identity_roles (id) ON DELETE CASCADE")
+	query.ForeignKey("(permission_id) REFERENCES identity_permissions (id) ON DELETE CASCADE")
+	return nil
+}
+
 type UserID = string
 type SessionID = string
+type RoleID = string
+type PermissionID = string

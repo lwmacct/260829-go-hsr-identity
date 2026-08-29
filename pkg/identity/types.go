@@ -4,6 +4,8 @@ import "github.com/lwmacct/260829-go-hsr-identity/pkg/identity/domain"
 
 type UserID = domain.UserID
 type SessionID = domain.SessionID
+type RoleID = domain.RoleID
+type PermissionID = domain.PermissionID
 type State = domain.State
 type User = domain.User
 type Claims = domain.Claims
@@ -12,6 +14,12 @@ type RequestMeta = domain.RequestMeta
 type UserCreate = domain.UserCreate
 type UserProfilePatch = domain.UserProfilePatch
 type UserFilter = domain.UserFilter
+type Role = domain.Role
+type Permission = domain.Permission
+type RoleFilter = domain.RoleFilter
+type PermissionFilter = domain.PermissionFilter
+type RoleInput = domain.RoleInput
+type PermissionInput = domain.PermissionInput
 type PasswordCredential = domain.PasswordCredential
 type SessionRecord = domain.SessionRecord
 type IssuedSession = domain.IssuedSession
@@ -24,6 +32,7 @@ type UnitOfWork = domain.UnitOfWork
 type TxManager = domain.TxManager
 type UserDirectory = domain.UserDirectory
 type SessionResolver = domain.SessionResolver
+type AuthorizationRepository = domain.AuthorizationRepository
 type ClaimsResolver = domain.ClaimsResolver
 type Clock = domain.Clock
 type HandlePolicy = domain.HandlePolicy
@@ -31,14 +40,26 @@ type HandlePolicyFunc = domain.HandlePolicyFunc
 type ValidationError = domain.ValidationError
 
 const (
-	StateActive             = domain.StateActive
-	StateDisabled           = domain.StateDisabled
-	ActionUserList          = domain.ActionUserList
-	ActionUserCreate        = domain.ActionUserCreate
-	ActionUserRead          = domain.ActionUserRead
-	ActionUserUpdate        = domain.ActionUserUpdate
-	ActionUserResetPassword = domain.ActionUserResetPassword
-	ActionUserDelete        = domain.ActionUserDelete
+	StateActive                = domain.StateActive
+	StateDisabled              = domain.StateDisabled
+	ActionUserList             = domain.ActionUserList
+	ActionUserCreate           = domain.ActionUserCreate
+	ActionUserRead             = domain.ActionUserRead
+	ActionUserUpdate           = domain.ActionUserUpdate
+	ActionUserResetPassword    = domain.ActionUserResetPassword
+	ActionUserDelete           = domain.ActionUserDelete
+	ActionRoleList             = domain.ActionRoleList
+	ActionRoleCreate           = domain.ActionRoleCreate
+	ActionRoleRead             = domain.ActionRoleRead
+	ActionRoleUpdate           = domain.ActionRoleUpdate
+	ActionRoleDelete           = domain.ActionRoleDelete
+	ActionPermissionList       = domain.ActionPermissionList
+	ActionPermissionCreate     = domain.ActionPermissionCreate
+	ActionPermissionRead       = domain.ActionPermissionRead
+	ActionPermissionUpdate     = domain.ActionPermissionUpdate
+	ActionPermissionDelete     = domain.ActionPermissionDelete
+	ActionUserRoleManage       = domain.ActionUserRoleManage
+	ActionRolePermissionManage = domain.ActionRolePermissionManage
 )
 
 var (
@@ -67,6 +88,10 @@ var NormalizeUserID = domain.NormalizeUserID
 var NormalizeSessionID = domain.NormalizeSessionID
 var ValidateUserID = domain.ValidateUserID
 var ValidateSessionID = domain.ValidateSessionID
+var NormalizeRoleID = domain.NormalizeRoleID
+var NormalizePermissionID = domain.NormalizePermissionID
+var ValidateRoleID = domain.ValidateRoleID
+var ValidatePermissionID = domain.ValidatePermissionID
 var NormalizeRequestMeta = domain.NormalizeRequestMeta
 var ContextWithPrincipal = domain.ContextWithPrincipal
 var PrincipalFromContext = domain.PrincipalFromContext

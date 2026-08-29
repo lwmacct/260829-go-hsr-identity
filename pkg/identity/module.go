@@ -10,15 +10,17 @@ import (
 	"github.com/lwmacct/260829-go-hsr-identity/internal/identity/handler"
 	"github.com/lwmacct/260829-go-hsr-identity/internal/identity/repository"
 	"github.com/lwmacct/260829-go-hsr-identity/internal/identity/service"
+	"github.com/lwmacct/260829-go-hsr-identity/pkg/identity/domain"
 	"github.com/uptrace/bun"
 )
 
 type Module struct {
-	users    *service.UserService
-	password *service.PasswordService
-	session  *service.SessionService
-	account  *service.AccountService
-	handler  *handler.Endpoint
+	users         *service.UserService
+	password      *service.PasswordService
+	session       *service.SessionService
+	authorization *service.AuthorizationService
+	account       *service.AccountService
+	handler       *handler.Endpoint
 }
 
 func New(options Options) (*Module, error) {
@@ -37,6 +39,24 @@ func New(options Options) (*Module, error) {
 	users, err := service.NewUserService(store, store, handle, now)
 	if err != nil {
 		return nil, err
+	}
+	authorization, err := service.NewAuthorizationService(store, store, store, now, options.Authorization.DefaultRoleCodes)
+	if err != nil {
+		return nil, err
+	}
+	claims := func(ctx context.Context, user *domain.User) (domain.Claims, error) {
+		builtIn, err := authorization.Claims(ctx, user)
+		if err != nil {
+			return domain.Claims{}, err
+		}
+		if options.Session.Claims == nil {
+			return builtIn, nil
+		}
+		extra, err := options.Session.Claims(ctx, user)
+		if err != nil {
+			return domain.Claims{}, err
+		}
+		return mergeClaims(builtIn, extra), nil
 	}
 	password, err := service.NewPasswordService(store, store, service.PasswordOptions{
 		Policy: service.PasswordPolicy{
@@ -67,20 +87,30 @@ func New(options Options) (*Module, error) {
 		TouchInterval: options.Session.TouchInterval,
 		TokenBytes:    options.Session.TokenBytes,
 		Binding:       options.Session.Binding,
-		Claims:        options.Session.Claims,
+		Claims:        claims,
 	}, now)
 	if err != nil {
 		return nil, err
 	}
-	account, err := service.NewAccountService(users, password, session, store)
+	account, err := service.NewAccountService(users, password, session, authorization, store)
 	if err != nil {
 		return nil, err
+	}
+	authorizer := func(ctx context.Context, principal *domain.Principal, action string) error {
+		if err := authorization.Authorize(ctx, principal, action); err != nil {
+			return err
+		}
+		if options.Authorizer != nil {
+			return options.Authorizer(ctx, principal, action)
+		}
+		return nil
 	}
 	endpoint := handler.NewEndpoint(handler.Config{
 		AuthPrefix:          options.HTTP.AuthPrefix,
 		AdminPrefix:         options.HTTP.AdminPrefix,
 		RegistrationEnabled: options.HTTP.RegistrationEnabled,
 		EnableAdminRoutes:   options.HTTP.EnableAdminRoutes,
+		EnableRBACRoutes:    options.HTTP.EnableRBACRoutes,
 		CookieName:          options.HTTP.CookieName,
 		CookiePath:          options.HTTP.CookiePath,
 		CookieDomain:        options.HTTP.CookieDomain,
@@ -88,9 +118,9 @@ func New(options Options) (*Module, error) {
 		SameSite:            options.HTTP.SameSite,
 		TokenExtractor:      options.HTTP.TokenExtractor,
 		RequestMetaResolver: options.HTTP.RequestMetaResolver,
-		Authorizer:          options.Authorizer,
-	}, handler.Services{Users: users, Passwords: password, Sessions: session, Accounts: account})
-	return &Module{users: users, password: password, session: session, account: account, handler: endpoint}, nil
+		Authorizer:          authorizer,
+	}, handler.Services{Users: users, Passwords: password, Sessions: session, Accounts: account, Authorization: authorization})
+	return &Module{users: users, password: password, session: session, authorization: authorization, account: account, handler: endpoint}, nil
 }
 
 func MustNew(options Options) *Module {
@@ -179,6 +209,111 @@ func (m *Module) SetUserState(ctx context.Context, ids []UserID, state State) er
 }
 func (m *Module) DeleteUsers(ctx context.Context, ids []UserID) error {
 	return m.users.DeleteUsers(ctx, ids)
+}
+
+func (m *Module) Authorize(ctx context.Context, principal *Principal, permission string) error {
+	if m == nil || m.authorization == nil {
+		return ErrForbidden
+	}
+	return m.authorization.Authorize(ctx, principal, permission)
+}
+
+func (m *Module) HasPermission(principal *Principal, permission string) bool {
+	return m != nil && m.authorization != nil && service.HasPermission(principal, permission)
+}
+
+func (m *Module) CreateRole(ctx context.Context, input RoleInput) (*Role, error) {
+	return m.authorization.CreateRole(ctx, input)
+}
+func (m *Module) EnsureRole(ctx context.Context, input RoleInput) (*Role, error) {
+	return m.authorization.EnsureRole(ctx, input)
+}
+func (m *Module) ListRoles(ctx context.Context, filter RoleFilter) ([]Role, int, error) {
+	return m.authorization.ListRoles(ctx, filter)
+}
+func (m *Module) RoleByID(ctx context.Context, id RoleID) (*Role, error) {
+	return m.authorization.RoleByID(ctx, id)
+}
+func (m *Module) RoleByCode(ctx context.Context, code string) (*Role, error) {
+	return m.authorization.RoleByCode(ctx, code)
+}
+func (m *Module) UpdateRole(ctx context.Context, id RoleID, input RoleInput) (*Role, error) {
+	return m.authorization.UpdateRole(ctx, id, input)
+}
+func (m *Module) DeleteRole(ctx context.Context, id RoleID) error {
+	return m.authorization.DeleteRole(ctx, id)
+}
+func (m *Module) CreatePermission(ctx context.Context, input PermissionInput) (*Permission, error) {
+	return m.authorization.CreatePermission(ctx, input)
+}
+func (m *Module) EnsurePermission(ctx context.Context, input PermissionInput) (*Permission, error) {
+	return m.authorization.EnsurePermission(ctx, input)
+}
+func (m *Module) ListPermissions(ctx context.Context, filter PermissionFilter) ([]Permission, int, error) {
+	return m.authorization.ListPermissions(ctx, filter)
+}
+func (m *Module) PermissionByID(ctx context.Context, id PermissionID) (*Permission, error) {
+	return m.authorization.PermissionByID(ctx, id)
+}
+func (m *Module) PermissionByCode(ctx context.Context, code string) (*Permission, error) {
+	return m.authorization.PermissionByCode(ctx, code)
+}
+func (m *Module) UpdatePermission(ctx context.Context, id PermissionID, input PermissionInput) (*Permission, error) {
+	return m.authorization.UpdatePermission(ctx, id, input)
+}
+func (m *Module) DeletePermission(ctx context.Context, id PermissionID) error {
+	return m.authorization.DeletePermission(ctx, id)
+}
+func (m *Module) UserRoles(ctx context.Context, userID UserID) ([]Role, error) {
+	return m.authorization.UserRoles(ctx, userID)
+}
+func (m *Module) SetUserRoles(ctx context.Context, userID UserID, roleCodes []string) error {
+	return m.authorization.SetUserRoles(ctx, userID, roleCodes)
+}
+func (m *Module) RolePermissions(ctx context.Context, roleID RoleID) ([]Permission, error) {
+	return m.authorization.RolePermissions(ctx, roleID)
+}
+func (m *Module) SetRolePermissions(ctx context.Context, roleID RoleID, permissionCodes []string) error {
+	return m.authorization.SetRolePermissions(ctx, roleID, permissionCodes)
+}
+
+func mergeClaims(base, extra Claims) Claims {
+	roles := append([]string(nil), base.Roles...)
+	permissions := append([]string(nil), base.Permissions...)
+	roles = append(roles, extra.Roles...)
+	permissions = append(permissions, extra.Permissions...)
+	roleSet := make(map[string]struct{}, len(roles))
+	permissionSet := make(map[string]struct{}, len(permissions))
+	uniqueRoles := roles[:0]
+	for _, role := range roles {
+		if role == "" {
+			continue
+		}
+		if _, ok := roleSet[role]; ok {
+			continue
+		}
+		roleSet[role] = struct{}{}
+		uniqueRoles = append(uniqueRoles, role)
+	}
+	uniquePermissions := permissions[:0]
+	for _, permission := range permissions {
+		if permission == "" {
+			continue
+		}
+		if _, ok := permissionSet[permission]; ok {
+			continue
+		}
+		permissionSet[permission] = struct{}{}
+		uniquePermissions = append(uniquePermissions, permission)
+	}
+	attributes := make(map[string]string, len(base.Attributes)+len(extra.Attributes))
+	for key, value := range base.Attributes {
+		attributes[key] = value
+	}
+	for key, value := range extra.Attributes {
+		attributes[key] = value
+	}
+	return Claims{Roles: uniqueRoles, Permissions: uniquePermissions, Attributes: attributes}
 }
 
 type Handler struct{ endpoint *handler.Endpoint }

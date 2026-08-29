@@ -9,17 +9,18 @@ import (
 )
 
 type AccountService struct {
-	users     *UserService
-	passwords *PasswordService
-	sessions  *SessionService
-	tx        domain.TxManager
+	users         *UserService
+	passwords     *PasswordService
+	sessions      *SessionService
+	authorization *AuthorizationService
+	tx            domain.TxManager
 }
 
-func NewAccountService(users *UserService, passwords *PasswordService, sessions *SessionService, tx domain.TxManager) (*AccountService, error) {
-	if users == nil || passwords == nil || sessions == nil || tx == nil {
+func NewAccountService(users *UserService, passwords *PasswordService, sessions *SessionService, authorization *AuthorizationService, tx domain.TxManager) (*AccountService, error) {
+	if users == nil || passwords == nil || sessions == nil || authorization == nil || tx == nil {
 		return nil, errors.New("identity: account dependencies are required")
 	}
-	return &AccountService{users: users, passwords: passwords, sessions: sessions, tx: tx}, nil
+	return &AccountService{users: users, passwords: passwords, sessions: sessions, authorization: authorization, tx: tx}, nil
 }
 func (s *AccountService) Register(ctx context.Context, in UserCreateInput, password string) (*domain.User, error) {
 	if e := s.passwords.Validate(in.Handle, password); e != nil {
@@ -37,6 +38,9 @@ func (s *AccountService) Register(ctx context.Context, in UserCreateInput, passw
 		}
 		u, e = users.Create(c, in)
 		if e != nil {
+			return e
+		}
+		if e = s.authorization.assignDefaultRoles(c, uow, u.ID); e != nil {
 			return e
 		}
 		pw, err := s.passwordService(uow)
@@ -67,6 +71,9 @@ func (s *AccountService) RegisterAndLogin(ctx context.Context, in UserCreateInpu
 		}
 		user, err = users.Create(c, in)
 		if err != nil {
+			return err
+		}
+		if err = s.authorization.assignDefaultRoles(c, uow, user.ID); err != nil {
 			return err
 		}
 		pw, err := s.passwordService(uow)

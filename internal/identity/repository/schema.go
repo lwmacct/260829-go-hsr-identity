@@ -14,8 +14,24 @@ type Schema struct {
 
 func DatabaseSchema() Schema {
 	return Schema{
-		Models: []any{(*UserModel)(nil), (*PasswordModel)(nil), (*SessionModel)(nil)},
-		Tables: []string{"identity_sessions", "identity_passwords", "identity_users"},
+		Models: []any{
+			(*UserModel)(nil),
+			(*PasswordModel)(nil),
+			(*SessionModel)(nil),
+			(*RoleModel)(nil),
+			(*PermissionModel)(nil),
+			(*UserRoleModel)(nil),
+			(*RolePermissionModel)(nil),
+		},
+		Tables: []string{
+			"identity_role_permissions",
+			"identity_user_roles",
+			"identity_sessions",
+			"identity_passwords",
+			"identity_permissions",
+			"identity_roles",
+			"identity_users",
+		},
 	}
 }
 
@@ -37,6 +53,8 @@ func (s Schema) Apply(ctx context.Context, db bun.IDB) error {
 	}{
 		{"identity_sessions_user_expiry_idx", "identity_sessions", []string{"user_id", "expires_at"}},
 		{"identity_sessions_expiry_idx", "identity_sessions", []string{"expires_at"}},
+		{"identity_user_roles_role_idx", "identity_user_roles", []string{"role_id"}},
+		{"identity_role_permissions_permission_idx", "identity_role_permissions", []string{"permission_id"}},
 	}
 	for _, index := range indexes {
 		if _, err := db.NewCreateIndex().Model((*SessionModel)(nil)).Index(index.name).Table(index.table).Column(index.columns...).IfNotExists().Exec(ctx); err != nil {

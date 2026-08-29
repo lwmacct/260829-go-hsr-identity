@@ -90,11 +90,18 @@ type SessionOptions struct {
 	Claims        ClaimsResolver
 }
 
+type AuthorizationOptions struct {
+	// DefaultRoleCodes are assigned atomically to newly created users. Leave
+	// empty when the host provisions roles explicitly after account creation.
+	DefaultRoleCodes []string
+}
+
 type HTTPOptions struct {
 	AuthPrefix          string
 	AdminPrefix         string
 	RegistrationEnabled bool
 	EnableAdminRoutes   bool
+	EnableRBACRoutes    bool
 	CookieName          string
 	CookiePath          string
 	CookieDomain        string
@@ -105,13 +112,14 @@ type HTTPOptions struct {
 }
 
 type Options struct {
-	DB           *bun.DB
-	Clock        Clock
-	HandlePolicy HandlePolicy
-	Password     PasswordOptions
-	Session      SessionOptions
-	HTTP         HTTPOptions
-	Authorizer   Authorizer
+	DB            *bun.DB
+	Clock         Clock
+	HandlePolicy  HandlePolicy
+	Password      PasswordOptions
+	Session       SessionOptions
+	Authorization AuthorizationOptions
+	HTTP          HTTPOptions
+	Authorizer    Authorizer
 }
 
 type Authorizer func(context.Context, *Principal, string) error

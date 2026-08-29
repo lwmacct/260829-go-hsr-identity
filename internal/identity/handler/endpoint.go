@@ -19,6 +19,7 @@ type Config struct {
 	AdminPrefix         string
 	RegistrationEnabled bool
 	EnableAdminRoutes   bool
+	EnableRBACRoutes    bool
 	CookieName          string
 	CookiePath          string
 	CookieDomain        string
@@ -30,10 +31,11 @@ type Config struct {
 }
 
 type Services struct {
-	Users     *service.UserService
-	Passwords *service.PasswordService
-	Sessions  *service.SessionService
-	Accounts  *service.AccountService
+	Users         *service.UserService
+	Passwords     *service.PasswordService
+	Sessions      *service.SessionService
+	Accounts      *service.AccountService
+	Authorization *service.AuthorizationService
 }
 
 type Endpoint struct {
@@ -83,6 +85,9 @@ func (e *Endpoint) Register(api huma.API) {
 	huma.Register(protected, huma.Operation{OperationID: "identity-revoke-sessions", Method: http.MethodPost, Path: "/sessions/revoke-all", Tags: []string{"Identity"}}, e.revokeAll)
 	if e.config.EnableAdminRoutes {
 		e.registerAdmin(api)
+		if e.config.EnableRBACRoutes {
+			e.registerAuthorization(api)
+		}
 	}
 }
 

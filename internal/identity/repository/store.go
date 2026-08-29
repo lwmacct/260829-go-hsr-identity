@@ -24,9 +24,10 @@ func NewStore(db bun.IDB) *Store {
 	return &Store{db: db, root: root}
 }
 
-func (s *Store) Users() domain.UserRepository         { return s }
-func (s *Store) Passwords() domain.PasswordRepository { return s }
-func (s *Store) Sessions() domain.SessionRepository   { return s }
+func (s *Store) Users() domain.UserRepository                  { return s }
+func (s *Store) Passwords() domain.PasswordRepository          { return s }
+func (s *Store) Sessions() domain.SessionRepository            { return s }
+func (s *Store) Authorization() domain.AuthorizationRepository { return s }
 
 func (s *Store) WithinTx(ctx context.Context, fn func(context.Context, domain.UnitOfWork) error) error {
 	if s == nil || s.root == nil {

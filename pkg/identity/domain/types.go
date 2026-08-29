@@ -12,6 +12,8 @@ import (
 
 type UserID string
 type SessionID string
+type RoleID string
+type PermissionID string
 type State string
 
 const (
@@ -53,14 +55,52 @@ func ValidateSessionID(id SessionID) error {
 	return err
 }
 
+func NormalizeRoleID(id RoleID) (RoleID, error) {
+	parsed, ok := parseUUIDv7(string(id))
+	if !ok {
+		return "", ErrInvalid
+	}
+	return RoleID(parsed.String()), nil
+}
+
+func NormalizePermissionID(id PermissionID) (PermissionID, error) {
+	parsed, ok := parseUUIDv7(string(id))
+	if !ok {
+		return "", ErrInvalid
+	}
+	return PermissionID(parsed.String()), nil
+}
+
+func ValidateRoleID(id RoleID) error {
+	_, err := NormalizeRoleID(id)
+	return err
+}
+
+func ValidatePermissionID(id PermissionID) error {
+	_, err := NormalizePermissionID(id)
+	return err
+}
+
 // Authorizer action names are stable integration points for host applications.
 const (
-	ActionUserList          = "identity.user.list"
-	ActionUserCreate        = "identity.user.create"
-	ActionUserRead          = "identity.user.read"
-	ActionUserUpdate        = "identity.user.update"
-	ActionUserResetPassword = "identity.user.reset_password"
-	ActionUserDelete        = "identity.user.delete"
+	ActionUserList             = "identity.user.list"
+	ActionUserCreate           = "identity.user.create"
+	ActionUserRead             = "identity.user.read"
+	ActionUserUpdate           = "identity.user.update"
+	ActionUserResetPassword    = "identity.user.reset_password"
+	ActionUserDelete           = "identity.user.delete"
+	ActionRoleList             = "identity.role.list"
+	ActionRoleCreate           = "identity.role.create"
+	ActionRoleRead             = "identity.role.read"
+	ActionRoleUpdate           = "identity.role.update"
+	ActionRoleDelete           = "identity.role.delete"
+	ActionPermissionList       = "identity.permission.list"
+	ActionPermissionCreate     = "identity.permission.create"
+	ActionPermissionRead       = "identity.permission.read"
+	ActionPermissionUpdate     = "identity.permission.update"
+	ActionPermissionDelete     = "identity.permission.delete"
+	ActionUserRoleManage       = "identity.user_role.manage"
+	ActionRolePermissionManage = "identity.role_permission.manage"
 )
 
 type User struct {
@@ -145,6 +185,52 @@ type UserFilter struct {
 	PageSize int
 }
 
+type Role struct {
+	ID          RoleID
+	Code        string
+	Name        string
+	Description string
+	System      bool
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+}
+
+type Permission struct {
+	ID          PermissionID
+	Code        string
+	Name        string
+	Description string
+	System      bool
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+}
+
+type RoleFilter struct {
+	Keyword  string
+	Page     int
+	PageSize int
+}
+
+type PermissionFilter struct {
+	Keyword  string
+	Page     int
+	PageSize int
+}
+
+type RoleInput struct {
+	Code        string
+	Name        string
+	Description string
+	System      bool
+}
+
+type PermissionInput struct {
+	Code        string
+	Name        string
+	Description string
+	System      bool
+}
+
 type PasswordCredential struct {
 	UserID            UserID
 	Scheme            string
@@ -201,10 +287,33 @@ type SessionRepository interface {
 	DeleteSessionsForUsers(context.Context, []UserID) error
 }
 
+// AuthorizationRepository stores the generic role/permission graph. Codes are
+// stable integration identifiers; IDs are UUIDv7 database identifiers.
+type AuthorizationRepository interface {
+	ListRoles(context.Context, RoleFilter) ([]Role, int, error)
+	GetRole(context.Context, RoleID) (*Role, error)
+	GetRoleByCode(context.Context, string) (*Role, error)
+	CreateRole(context.Context, Role) (*Role, error)
+	UpdateRole(context.Context, RoleID, RoleInput, time.Time) (*Role, error)
+	DeleteRole(context.Context, RoleID) error
+	ListPermissions(context.Context, PermissionFilter) ([]Permission, int, error)
+	GetPermission(context.Context, PermissionID) (*Permission, error)
+	GetPermissionByCode(context.Context, string) (*Permission, error)
+	CreatePermission(context.Context, Permission) (*Permission, error)
+	UpdatePermission(context.Context, PermissionID, PermissionInput, time.Time) (*Permission, error)
+	DeletePermission(context.Context, PermissionID) error
+	ListUserRoles(context.Context, UserID) ([]Role, error)
+	ReplaceUserRoles(context.Context, UserID, []RoleID) error
+	ListRolePermissions(context.Context, RoleID) ([]Permission, error)
+	ReplaceRolePermissions(context.Context, RoleID, []PermissionID) error
+	ListUserClaims(context.Context, UserID) (Claims, error)
+}
+
 type UnitOfWork interface {
 	Users() UserRepository
 	Passwords() PasswordRepository
 	Sessions() SessionRepository
+	Authorization() AuthorizationRepository
 }
 
 type TxManager interface {

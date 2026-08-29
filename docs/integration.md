@@ -4,8 +4,9 @@
 2. Call `identity.ApplySchema` in tests, or add `identity.DatabaseSchema().Models` to the host's schema registry.
 3. Construct one `identity.Module` during application startup.
 4. Call `module.Register(api)` after creating the host Huma API.
-5. Inject the host authorization callback through `Options.Authorizer`.
-6. Keep OAuth, SSH keys, challenges, audit events, and business associations in host-owned tables and services.
+5. Initialize the host's permission catalog and role bindings through the module's RBAC API.
+6. Use `Options.Authorizer` only for additional host policy (for example resource ownership or tenant checks).
+7. Keep OAuth, SSH keys, challenges, audit events, and business associations in host-owned tables and services.
 
 Use `module.Login` for password login and `module.CreateSession` after a host-owned
 OAuth/SSH login; both record `last_login_at` transactionally. For trusted reverse
@@ -17,4 +18,4 @@ When `EnableAdminRoutes` is enabled, authorize the stable action constants
 `identity.ActionUserUpdate`, `identity.ActionUserResetPassword`, and
 `identity.ActionUserDelete` in the host callback.
 
-The module's table names are `identity_users`, `identity_passwords`, and `identity_sessions`. A host migration should import existing records once and then remove the old identity tables; no compatibility double-write layer is provided.
+The module's table names are `identity_users`, `identity_passwords`, `identity_sessions`, `identity_roles`, `identity_permissions`, `identity_user_roles`, and `identity_role_permissions`. A host migration should import existing records once and then remove the old identity tables; no compatibility double-write layer is provided.

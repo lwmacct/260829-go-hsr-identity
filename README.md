@@ -1,6 +1,6 @@
 # identity
 
-`identity` 是一个面向 Go 1.27、PostgreSQL 18+ 应用的用户身份模块，直接使用宿主已经采用的 Bun 和 Huma。它提供用户、Argon2id 密码、不可逆 Session token、账户生命周期和基础 HTTP API；OAuth、SSH key、验证码、角色权限、审计及业务关系由宿主项目拥有。
+`identity` 是一个面向 Go 1.27、PostgreSQL 18+ 应用的身份与访问控制模块，直接使用宿主已经采用的 Bun 和 Huma。它提供用户、Argon2id 密码、不可逆 Session token、账户生命周期、通用 RBAC 和基础 HTTP API；OAuth、SSH key、验证码、审计及业务关系由宿主项目拥有。
 
 ## 分层
 
@@ -50,6 +50,12 @@ principal, err := mod.ResolveSession(ctx, issued.Token, identity.RequestMeta{Cli
 
 // OAuth/SSH 等宿主登录完成后，直接签发 identity Session：
 issued, err = mod.CreateSession(ctx, user.ID, identity.RequestMeta{ClientIP: "203.0.113.10"})
+
+// 初始化通用角色和权限：
+role, err := mod.EnsureRole(ctx, identity.RoleInput{Code: "admin", Name: "Administrator", System: true})
+permission, err := mod.EnsurePermission(ctx, identity.PermissionInput{Code: "relay.api_key.manage", Name: "Manage API keys"})
+err = mod.SetRolePermissions(ctx, role.ID, []string{permission.Code})
+err = mod.SetUserRoles(ctx, user.ID, []string{role.Code})
 ```
 
 `Authenticate` 只做凭据校验；需要建立登录态时使用 `Login`。`CreateSession`
@@ -72,22 +78,26 @@ PATCH /auth/password
 POST  /auth/sessions/revoke-all
 ```
 
-开启 `EnableAdminRoutes` 后提供 `/admin/users` 的列表、创建、查询、更新、状态切换、密码重置和删除接口。管理员授权通过 `Options.Authorizer` 注入，identity 不保存角色或权限表。
+开启 `EnableAdminRoutes` 后提供 `/admin/users` 的列表、创建、查询、更新、状态切换、密码重置和删除接口。开启 `EnableRBACRoutes` 后还提供角色、权限及绑定管理接口。基础管理操作由 identity RBAC 权限控制；`Options.Authorizer` 仅用于叠加宿主的额外策略。
 
 认证中间件同时支持 Session cookie 和 `Authorization: Bearer <token>`。宿主可以通过 `HTTP.TokenExtractor` 完全替换 token 来源。
 如果应用位于可信反向代理之后，可通过 `HTTP.RequestMetaResolver` 注入客户端 IP、User-Agent 和 Device ID 的解析；默认实现不信任转发头。
 
 ## 数据表
 
-模块只拥有三张表：
+模块拥有七张表：
 
 ```text
 identity_users
 identity_passwords
 identity_sessions
+identity_roles
+identity_permissions
+identity_user_roles
+identity_role_permissions
 ```
 
-不包含 `user_external_identities`，也不包含 OAuth、SSH、验证码、授权或审计表。
+不包含 `user_external_identities`，也不包含 OAuth、SSH、验证码或审计表。宿主的业务权限编码写入 identity 的通用 permission 表，但权限语义仍由宿主定义。
 
 PostgreSQL 最低支持版本为 18；生产环境由宿主 migration runner 管理 schema
 版本，本包不自动迁移或创建表。PostgreSQL schema 会使用
