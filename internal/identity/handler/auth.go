@@ -30,6 +30,8 @@ type operationView struct {
 type sessionView struct {
 	Authenticated   bool      `json:"authenticated"`
 	User            userView  `json:"user,omitzero"`
+	Roles           []string  `json:"roles,omitempty"`
+	Permissions     []string  `json:"permissions,omitempty"`
 	SessionID       string    `json:"sessionId,omitempty"`
 	AuthenticatedAt timeValue `json:"authenticatedAt,omitzero"`
 	ExpiresAt       timeValue `json:"expiresAt,omitzero"`

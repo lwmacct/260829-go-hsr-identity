@@ -173,7 +173,7 @@ func sessionViewFromPrincipal(p *domain.Principal) sessionView {
 	if p == nil {
 		return sessionView{}
 	}
-	return sessionView{Authenticated: true, User: userViewFrom(p.User), SessionID: string(p.SessionID), AuthenticatedAt: p.AuthenticatedAt, ExpiresAt: p.ExpiresAt}
+	return sessionView{Authenticated: true, User: userViewFrom(p.User), Roles: append([]string(nil), p.Claims.Roles...), Permissions: append([]string(nil), p.Claims.Permissions...), SessionID: string(p.SessionID), AuthenticatedAt: p.AuthenticatedAt, ExpiresAt: p.ExpiresAt}
 }
 func normalizePage(page, size int) (int, int) {
 	if page < 1 {
