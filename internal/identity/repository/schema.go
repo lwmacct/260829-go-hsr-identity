@@ -57,7 +57,10 @@ func (s Schema) Apply(ctx context.Context, db bun.IDB) error {
 		{"identity_role_permissions_permission_idx", "identity_role_permissions", []string{"permission_id"}},
 	}
 	for _, index := range indexes {
-		if _, err := db.NewCreateIndex().Model((*SessionModel)(nil)).Index(index.name).Table(index.table).Column(index.columns...).IfNotExists().Exec(ctx); err != nil {
+		// The index target is supplied explicitly. Do not bind a model here:
+		// Bun keeps a model's table as the primary target even when Table is
+		// called afterwards, which would make every index use identity_sessions.
+		if _, err := db.NewCreateIndex().Index(index.name).Table(index.table).Column(index.columns...).IfNotExists().Exec(ctx); err != nil {
 			return fmt.Errorf("create identity index: %w", err)
 		}
 	}
