@@ -30,6 +30,9 @@ func New(options Options) (*Module, error) {
 	if options.DB == nil {
 		return nil, errors.New("identity: database is required")
 	}
+	if options.HTTP.RequireChallenge && options.HTTP.ChallengeProvider == nil {
+		return nil, errors.New("identity: challenge provider is required when challenge enforcement is enabled")
+	}
 	now := options.Clock
 	if now == nil {
 		now = func() time.Time { return time.Now().UTC() }
