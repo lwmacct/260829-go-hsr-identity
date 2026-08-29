@@ -105,7 +105,7 @@ const (
 
 type User struct {
 	ID          UserID
-	Handle      string
+	Username    string
 	DisplayName string
 	Email       string
 	AvatarURL   string
@@ -147,7 +147,7 @@ type RequestMeta struct {
 
 type UserCreate struct {
 	ID          UserID
-	Handle      string
+	Username    string
 	DisplayName string
 	Email       string
 	AvatarURL   string
@@ -158,7 +158,7 @@ type UserCreate struct {
 }
 
 type UserCreateInput struct {
-	Handle      string
+	Username    string
 	DisplayName string
 	Email       string
 	AvatarURL   string
@@ -272,7 +272,7 @@ type IssuedSession struct {
 type UserRepository interface {
 	CreateUser(context.Context, UserCreate) (*User, error)
 	GetUser(context.Context, UserID) (*User, error)
-	GetUserByHandle(context.Context, string) (*User, error)
+	GetUserByUsername(context.Context, string) (*User, error)
 	ListUsers(context.Context, UserFilter) ([]User, int, error)
 	UpdateUserProfile(context.Context, UserID, UserProfilePatch) (*User, error)
 	UpdateUserState(context.Context, []UserID, State, *time.Time, time.Time) (int64, error)
@@ -335,7 +335,7 @@ type TxManager interface {
 
 type UserDirectory interface {
 	UserByID(context.Context, UserID) (*User, error)
-	UserByHandle(context.Context, string) (*User, error)
+	UserByUsername(context.Context, string) (*User, error)
 }
 
 func DirectoryFromRepository(repository UserRepository) UserDirectory {
@@ -350,8 +350,8 @@ type repositoryDirectory struct{ UserRepository }
 func (r repositoryDirectory) UserByID(ctx context.Context, id UserID) (*User, error) {
 	return r.GetUser(ctx, id)
 }
-func (r repositoryDirectory) UserByHandle(ctx context.Context, handle string) (*User, error) {
-	return r.GetUserByHandle(ctx, handle)
+func (r repositoryDirectory) UserByUsername(ctx context.Context, username string) (*User, error) {
+	return r.GetUserByUsername(ctx, username)
 }
 
 type SessionResolver interface {
@@ -361,12 +361,12 @@ type SessionResolver interface {
 type ClaimsResolver func(context.Context, *User) (Claims, error)
 
 type Clock func() time.Time
-type HandlePolicy interface{ Normalize(string) (string, error) }
-type HandlePolicyFunc func(string) (string, error)
+type UsernamePolicy interface{ Normalize(string) (string, error) }
+type UsernamePolicyFunc func(string) (string, error)
 
-func (f HandlePolicyFunc) Normalize(value string) (string, error) {
+func (f UsernamePolicyFunc) Normalize(value string) (string, error) {
 	if f == nil {
-		return "", ErrInvalidHandle
+		return "", ErrInvalidUsername
 	}
 	return f(value)
 }
@@ -400,8 +400,8 @@ var (
 	ErrInvalid            = errors.New("identity invalid")
 	ErrNotFound           = errors.New("identity not found")
 	ErrConflict           = errors.New("identity conflict")
-	ErrInvalidHandle      = fmt.Errorf("%w: invalid identity handle", ErrInvalid)
-	ErrHandleTaken        = errors.New("identity handle already taken")
+	ErrInvalidUsername    = fmt.Errorf("%w: invalid identity username", ErrInvalid)
+	ErrUsernameTaken      = errors.New("identity username already taken")
 	ErrBootstrapCompleted = errors.New("identity bootstrap already completed")
 	ErrInvalidUser        = fmt.Errorf("%w: invalid identity user", ErrInvalid)
 	ErrDisabled           = errors.New("identity user disabled")
@@ -417,10 +417,10 @@ var (
 	ErrForbidden          = errors.New("identity forbidden")
 )
 
-func LowerASCIIHandlePolicy(raw string) (string, error) {
+func LowerASCIIUsernamePolicy(raw string) (string, error) {
 	value := strings.ToLower(strings.TrimSpace(raw))
 	if value == "" || len(value) > 64 {
-		return "", ErrInvalidHandle
+		return "", ErrInvalidUsername
 	}
 	var b strings.Builder
 	lastSeparator := false
@@ -435,18 +435,18 @@ func LowerASCIIHandlePolicy(raw string) (string, error) {
 			lastSeparator = true
 			continue
 		}
-		return "", ErrInvalidHandle
+		return "", ErrInvalidUsername
 	}
 	if b.Len() == 0 || lastSeparator {
-		return "", ErrInvalidHandle
+		return "", ErrInvalidUsername
 	}
 	return b.String(), nil
 }
 
-func TrimHandlePolicy(raw string) (string, error) {
+func TrimUsernamePolicy(raw string) (string, error) {
 	value := strings.TrimSpace(raw)
 	if value == "" || len(value) > 128 {
-		return "", ErrInvalidHandle
+		return "", ErrInvalidUsername
 	}
 	return value, nil
 }

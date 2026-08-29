@@ -64,11 +64,11 @@ func TestPostgreSQLLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	user, err := module.RegisterUser(ctx, identity.UserCreateInput{Handle: "postgres-user"}, "correct horse")
+	user, err := module.RegisterUser(ctx, identity.UserCreateInput{Username: "postgres-user"}, "correct horse")
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, issued, err := module.Login(ctx, user.Handle, "correct horse", identity.RequestMeta{ClientIP: "127.0.0.1"})
+	_, issued, err := module.Login(ctx, user.Username, "correct horse", identity.RequestMeta{ClientIP: "127.0.0.1"})
 	if err != nil {
 		t.Fatal(err)
 	}

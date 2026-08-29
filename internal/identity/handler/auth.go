@@ -11,7 +11,7 @@ import (
 
 type credentialsBody struct {
 	Challenge *challengeBody `json:"challenge,omitempty"`
-	Handle    string         `json:"handle" minLength:"1"`
+	Username  string         `json:"username" minLength:"1"`
 	Password  string         `json:"password" minLength:"1"`
 }
 type credentialsInput struct{ Body credentialsBody }
@@ -52,7 +52,7 @@ func (e *Endpoint) register(ctx context.Context, input *credentialsInput) (*sess
 	if err := e.verifyChallenge(ctx, input.Body.Challenge); err != nil {
 		return nil, mapError(err, false)
 	}
-	user, issued, err := e.services.Accounts.RegisterAndLogin(ctx, domain.UserCreateInput{Handle: input.Body.Handle}, input.Body.Password, requestMetaFromContext(ctx))
+	user, issued, err := e.services.Accounts.RegisterAndLogin(ctx, domain.UserCreateInput{Username: input.Body.Username}, input.Body.Password, requestMetaFromContext(ctx))
 	if err != nil {
 		return nil, mapError(err, false)
 	}
@@ -66,7 +66,7 @@ func (e *Endpoint) login(ctx context.Context, input *credentialsInput) (*session
 	if err := e.verifyChallenge(ctx, input.Body.Challenge); err != nil {
 		return nil, mapError(err, true)
 	}
-	user, issued, err := e.services.Accounts.Login(ctx, input.Body.Handle, input.Body.Password, requestMetaFromContext(ctx))
+	user, issued, err := e.services.Accounts.Login(ctx, input.Body.Username, input.Body.Password, requestMetaFromContext(ctx))
 	if err != nil {
 		return nil, mapError(err, true)
 	}

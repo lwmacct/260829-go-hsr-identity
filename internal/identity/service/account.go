@@ -25,7 +25,7 @@ func NewAccountService(users *UserService, passwords *PasswordService, sessions 
 	return &AccountService{users: users, passwords: passwords, sessions: sessions, authorization: authorization, tx: tx}, nil
 }
 func (s *AccountService) Register(ctx context.Context, in UserCreateInput, password string) (*domain.User, error) {
-	if e := s.passwords.Validate(in.Handle, password); e != nil {
+	if e := s.passwords.Validate(in.Username, password); e != nil {
 		return nil, e
 	}
 	hash, e := s.passwords.Hash(password)
@@ -65,7 +65,7 @@ func (s *AccountService) BootstrapUser(ctx context.Context, in domain.BootstrapI
 	if in.User.State != "" && in.User.State != domain.StateActive {
 		return nil, domain.ErrInvalidState
 	}
-	if err := s.passwords.Validate(in.User.Handle, in.Password); err != nil {
+	if err := s.passwords.Validate(in.User.Username, in.Password); err != nil {
 		return nil, err
 	}
 	hash, err := s.passwords.Hash(in.Password)
@@ -116,7 +116,7 @@ func (s *AccountService) BootstrapUser(ctx context.Context, in domain.BootstrapI
 // RegisterAndLogin atomically creates an account, its password, a Session,
 // and the first last-login timestamp. The issued token is returned only once.
 func (s *AccountService) RegisterAndLogin(ctx context.Context, in UserCreateInput, password string, meta domain.RequestMeta) (*domain.User, *domain.IssuedSession, error) {
-	if e := s.passwords.Validate(in.Handle, password); e != nil {
+	if e := s.passwords.Validate(in.Username, password); e != nil {
 		return nil, nil, e
 	}
 	hash, e := s.passwords.Hash(password)
@@ -166,7 +166,7 @@ func (s *AccountService) RegisterAndLogin(ctx context.Context, in UserCreateInpu
 // Login verifies credentials, creates a Session, and records last_login_at in
 // one transaction. Callers that only need credential verification should use
 // PasswordService.Authenticate through Module.Authenticate.
-func (s *AccountService) Login(ctx context.Context, handle, password string, meta domain.RequestMeta) (*domain.User, *domain.IssuedSession, error) {
+func (s *AccountService) Login(ctx context.Context, username, password string, meta domain.RequestMeta) (*domain.User, *domain.IssuedSession, error) {
 	var user *domain.User
 	var issued *domain.IssuedSession
 	err := s.tx.WithinTx(ctx, func(c context.Context, uow domain.UnitOfWork) error {
@@ -174,7 +174,7 @@ func (s *AccountService) Login(ctx context.Context, handle, password string, met
 		if err != nil {
 			return err
 		}
-		user, err = pw.Authenticate(c, handle, password)
+		user, err = pw.Authenticate(c, username, password)
 		if err != nil {
 			return err
 		}
@@ -254,7 +254,7 @@ func (s *AccountService) ChangePassword(ctx context.Context, id domain.UserID, c
 		if e := pw.AuthenticateUser(c, id, current); e != nil {
 			return e
 		}
-		if e := pw.Validate(user.Handle, next); e != nil {
+		if e := pw.Validate(user.Username, next); e != nil {
 			return e
 		}
 		h, e := pw.Hash(next)
@@ -278,7 +278,7 @@ func (s *AccountService) ResetPassword(ctx context.Context, id domain.UserID, ne
 		if err != nil {
 			return err
 		}
-		if err = s.passwords.Validate(user.Handle, next); err != nil {
+		if err = s.passwords.Validate(user.Username, next); err != nil {
 			return err
 		}
 		h, err := s.passwords.Hash(next)
@@ -297,11 +297,11 @@ func (s *AccountService) ResetPassword(ctx context.Context, id domain.UserID, ne
 }
 
 func (s *AccountService) userService(uow domain.UnitOfWork) (*UserService, error) {
-	return NewUserService(uow.Users(), nil, s.users.handle, s.users.now)
+	return NewUserService(uow.Users(), nil, s.users.username, s.users.now)
 }
 
 func (s *AccountService) passwordService(uow domain.UnitOfWork) (*PasswordService, error) {
-	return NewPasswordService(uow.Passwords(), domain.DirectoryFromRepository(uow.Users()), PasswordOptions{Hasher: s.passwords.hasher, Policy: s.passwords.policy}, s.passwords.now, s.passwords.handle)
+	return NewPasswordService(uow.Passwords(), domain.DirectoryFromRepository(uow.Users()), PasswordOptions{Hasher: s.passwords.hasher, Policy: s.passwords.policy}, s.passwords.now, s.passwords.username)
 }
 
 func timePtr(value time.Time) *time.Time { return &value }

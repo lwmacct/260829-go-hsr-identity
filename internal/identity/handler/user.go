@@ -11,7 +11,7 @@ import (
 
 type userView struct {
 	ID          string     `json:"id" format:"uuid"`
-	Handle      string     `json:"handle"`
+	Username    string     `json:"username"`
 	DisplayName string     `json:"displayName"`
 	Email       string     `json:"email,omitempty"`
 	AvatarURL   string     `json:"avatarUrl,omitempty"`
@@ -49,7 +49,7 @@ type userProfileInput struct {
 	Body   userProfileBody
 }
 type adminCreateBody struct {
-	Handle      string `json:"handle" minLength:"1"`
+	Username    string `json:"username" minLength:"1"`
 	DisplayName string `json:"displayName,omitempty"`
 	Email       string `json:"email,omitempty"`
 	AvatarURL   string `json:"avatarUrl,omitempty"`
@@ -105,7 +105,7 @@ func (e *Endpoint) adminCreate(ctx context.Context, input *adminCreateInput) (*u
 		return nil, mapError(err, false)
 	}
 	b := input.Body
-	u, err := e.services.Accounts.Register(ctx, domain.UserCreateInput{Handle: b.Handle, DisplayName: b.DisplayName, Email: b.Email, AvatarURL: b.AvatarURL}, b.Password)
+	u, err := e.services.Accounts.Register(ctx, domain.UserCreateInput{Username: b.Username, DisplayName: b.DisplayName, Email: b.Email, AvatarURL: b.AvatarURL}, b.Password)
 	if err != nil {
 		return nil, mapError(err, false)
 	}
@@ -167,7 +167,7 @@ func userViewFrom(u *domain.User) userView {
 	if u == nil {
 		return userView{}
 	}
-	return userView{ID: string(u.ID), Handle: u.Handle, DisplayName: u.DisplayName, Email: u.Email, AvatarURL: u.AvatarURL, State: string(u.State), DisabledAt: u.DisabledAt, LastLoginAt: u.LastLoginAt, CreatedAt: u.CreatedAt, UpdatedAt: u.UpdatedAt}
+	return userView{ID: string(u.ID), Username: u.Username, DisplayName: u.DisplayName, Email: u.Email, AvatarURL: u.AvatarURL, State: string(u.State), DisabledAt: u.DisabledAt, LastLoginAt: u.LastLoginAt, CreatedAt: u.CreatedAt, UpdatedAt: u.UpdatedAt}
 }
 func sessionViewFromPrincipal(p *domain.Principal) sessionView {
 	if p == nil {

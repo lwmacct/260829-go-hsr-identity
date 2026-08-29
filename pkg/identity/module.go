@@ -37,12 +37,12 @@ func New(options Options) (*Module, error) {
 	if now == nil {
 		now = func() time.Time { return time.Now().UTC() }
 	}
-	handle := options.HandlePolicy
-	if handle == nil {
-		handle = HandlePolicyFunc(LowerASCIIHandlePolicy)
+	username := options.UsernamePolicy
+	if username == nil {
+		username = UsernamePolicyFunc(LowerASCIIUsernamePolicy)
 	}
 	store := repository.NewStore(options.DB)
-	users, err := service.NewUserService(store, store, handle, now)
+	users, err := service.NewUserService(store, store, username, now)
 	if err != nil {
 		return nil, err
 	}
@@ -66,14 +66,14 @@ func New(options Options) (*Module, error) {
 	}
 	password, err := service.NewPasswordService(store, store, service.PasswordOptions{
 		Policy: service.PasswordPolicy{
-			MinLength:     options.Password.Policy.MinLength,
-			MaxLength:     options.Password.Policy.MaxLength,
-			RequireUpper:  options.Password.Policy.RequireUpper,
-			RequireLower:  options.Password.Policy.RequireLower,
-			RequireDigit:  options.Password.Policy.RequireDigit,
-			RequireSymbol: options.Password.Policy.RequireSymbol,
-			RejectHandle:  options.Password.Policy.RejectHandle,
-			RejectCommon:  options.Password.Policy.RejectCommon,
+			MinLength:      options.Password.Policy.MinLength,
+			MaxLength:      options.Password.Policy.MaxLength,
+			RequireUpper:   options.Password.Policy.RequireUpper,
+			RequireLower:   options.Password.Policy.RequireLower,
+			RequireDigit:   options.Password.Policy.RequireDigit,
+			RequireSymbol:  options.Password.Policy.RequireSymbol,
+			RejectUsername: options.Password.Policy.RejectUsername,
+			RejectCommon:   options.Password.Policy.RejectCommon,
 		},
 		Hasher: options.Password.Hasher,
 		Argon2id: service.Argon2idParams{
@@ -83,7 +83,7 @@ func New(options Options) (*Module, error) {
 			SaltLength:  options.Password.Argon2id.SaltLength,
 			KeyLength:   options.Password.Argon2id.KeyLength,
 		},
-	}, now, handle)
+	}, now, username)
 	if err != nil {
 		return nil, err
 	}
@@ -153,8 +153,8 @@ func (m *Module) Handler() *Handler {
 func (m *Module) UserByID(ctx context.Context, id UserID) (*User, error) {
 	return m.users.UserByID(ctx, id)
 }
-func (m *Module) UserByHandle(ctx context.Context, handle string) (*User, error) {
-	return m.users.UserByHandle(ctx, handle)
+func (m *Module) UserByUsername(ctx context.Context, username string) (*User, error) {
+	return m.users.UserByUsername(ctx, username)
 }
 func (m *Module) CreateUser(ctx context.Context, input UserCreateInput) (*User, error) {
 	return m.users.Create(ctx, input)
@@ -187,11 +187,11 @@ func (m *Module) BootstrapUser(ctx context.Context, input BootstrapInput) (*User
 func (m *Module) RegisterAndLogin(ctx context.Context, input UserCreateInput, password string, meta RequestMeta) (*User, *IssuedSession, error) {
 	return m.account.RegisterAndLogin(ctx, input, password, meta)
 }
-func (m *Module) Authenticate(ctx context.Context, handle, password string) (*User, error) {
-	return m.password.Authenticate(ctx, handle, password)
+func (m *Module) Authenticate(ctx context.Context, username, password string) (*User, error) {
+	return m.password.Authenticate(ctx, username, password)
 }
-func (m *Module) Login(ctx context.Context, handle, password string, meta RequestMeta) (*User, *IssuedSession, error) {
-	return m.account.Login(ctx, handle, password, meta)
+func (m *Module) Login(ctx context.Context, username, password string, meta RequestMeta) (*User, *IssuedSession, error) {
+	return m.account.Login(ctx, username, password, meta)
 }
 func (m *Module) CreateSession(ctx context.Context, userID UserID, meta RequestMeta) (*IssuedSession, error) {
 	return m.account.IssueSession(ctx, userID, meta)

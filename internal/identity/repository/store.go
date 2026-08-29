@@ -47,7 +47,7 @@ func (s *Store) CreateUser(ctx context.Context, in domain.UserCreate) (*domain.U
 		return nil, err
 	}
 	in.ID = id
-	m := &UserModel{ID: string(in.ID), Handle: in.Handle, DisplayName: in.DisplayName, Email: in.Email, AvatarURL: in.AvatarURL, State: string(in.State), DisabledAt: in.DisabledAt, CreatedAt: in.CreatedAt, UpdatedAt: in.UpdatedAt}
+	m := &UserModel{ID: string(in.ID), Username: in.Username, DisplayName: in.DisplayName, Email: in.Email, AvatarURL: in.AvatarURL, State: string(in.State), DisabledAt: in.DisabledAt, CreatedAt: in.CreatedAt, UpdatedAt: in.UpdatedAt}
 	if _, err := s.db.NewInsert().Model(m).Exec(ctx); err != nil {
 		return nil, mapWriteError(err, true)
 	}
@@ -62,9 +62,9 @@ func (s *Store) GetUser(ctx context.Context, id domain.UserID) (*domain.User, er
 	return userFrom(m), nil
 }
 
-func (s *Store) GetUserByHandle(ctx context.Context, handle string) (*domain.User, error) {
+func (s *Store) GetUserByUsername(ctx context.Context, username string) (*domain.User, error) {
 	m := new(UserModel)
-	if err := s.db.NewSelect().Model(m).Where("u.handle = ?", handle).Scan(ctx); err != nil {
+	if err := s.db.NewSelect().Model(m).Where("u.username = ?", username).Scan(ctx); err != nil {
 		return nil, mapReadError(err)
 	}
 	return userFrom(m), nil
@@ -74,8 +74,8 @@ func (s *Store) UserByID(ctx context.Context, id domain.UserID) (*domain.User, e
 	return s.GetUser(ctx, id)
 }
 
-func (s *Store) UserByHandle(ctx context.Context, handle string) (*domain.User, error) {
-	return s.GetUserByHandle(ctx, handle)
+func (s *Store) UserByUsername(ctx context.Context, username string) (*domain.User, error) {
+	return s.GetUserByUsername(ctx, username)
 }
 
 func (s *Store) ListUsers(ctx context.Context, filter domain.UserFilter) ([]domain.User, int, error) {
@@ -102,7 +102,7 @@ func (s *Store) ListUsers(ctx context.Context, filter domain.UserFilter) ([]doma
 func applyUserFilter(q *bun.SelectQuery, filter domain.UserFilter) *bun.SelectQuery {
 	if keyword := strings.TrimSpace(filter.Keyword); keyword != "" {
 		like := "%" + keyword + "%"
-		q = q.Where("(u.handle LIKE ? OR u.display_name LIKE ? OR u.email LIKE ?)", like, like, like)
+		q = q.Where("(u.username LIKE ? OR u.display_name LIKE ? OR u.email LIKE ?)", like, like, like)
 	}
 	if filter.State != "" {
 		q = q.Where("u.state = ?", string(filter.State))
@@ -298,11 +298,11 @@ func mapReadError(err error) error {
 	}
 	return err
 }
-func mapWriteError(err error, handle bool) error {
+func mapWriteError(err error, username bool) error {
 	lower := strings.ToLower(err.Error())
 	if strings.Contains(lower, "unique") || strings.Contains(lower, "duplicate") {
-		if handle && strings.Contains(lower, "handle") {
-			return domain.ErrHandleTaken
+		if username && strings.Contains(lower, "username") {
+			return domain.ErrUsernameTaken
 		}
 		return domain.ErrConflict
 	}
@@ -312,7 +312,7 @@ func mapWriteError(err error, handle bool) error {
 	return err
 }
 func userFrom(m *UserModel) *domain.User {
-	return &domain.User{ID: domain.UserID(m.ID), Handle: m.Handle, DisplayName: m.DisplayName, Email: m.Email, AvatarURL: m.AvatarURL, State: domain.State(m.State), DisabledAt: m.DisabledAt, LastLoginAt: m.LastLoginAt, CreatedAt: m.CreatedAt, UpdatedAt: m.UpdatedAt}
+	return &domain.User{ID: domain.UserID(m.ID), Username: m.Username, DisplayName: m.DisplayName, Email: m.Email, AvatarURL: m.AvatarURL, State: domain.State(m.State), DisabledAt: m.DisabledAt, LastLoginAt: m.LastLoginAt, CreatedAt: m.CreatedAt, UpdatedAt: m.UpdatedAt}
 }
 func sessionFrom(m *SessionModel) *domain.SessionRecord {
 	return &domain.SessionRecord{ID: domain.SessionID(m.ID), TokenHash: append([]byte(nil), m.TokenHash...), UserID: domain.UserID(m.UserID), LoginIP: m.LoginIP, LastIP: m.LastIP, BindingHash: append([]byte(nil), m.BindingHash...), UserAgentHash: append([]byte(nil), m.UserAgentHash...), ExpiresAt: m.ExpiresAt, CreatedAt: m.CreatedAt, LastSeenAt: m.LastSeenAt, RevokedAt: m.RevokedAt, RevokedReason: m.RevokedReason}

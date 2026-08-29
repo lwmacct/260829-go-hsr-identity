@@ -121,10 +121,10 @@ type PasswordService struct {
 	hasher      PasswordHasher
 	policy      PasswordPolicy
 	now         domain.Clock
-	handle      domain.HandlePolicy
+	username    domain.UsernamePolicy
 }
 
-func NewPasswordService(credentials domain.PasswordRepository, users domain.UserDirectory, options PasswordOptions, now domain.Clock, handle domain.HandlePolicy) (*PasswordService, error) {
+func NewPasswordService(credentials domain.PasswordRepository, users domain.UserDirectory, options PasswordOptions, now domain.Clock, username domain.UsernamePolicy) (*PasswordService, error) {
 	if credentials == nil {
 		return nil, errors.New("identity: password repository is required")
 	}
@@ -136,7 +136,7 @@ func NewPasswordService(credentials domain.PasswordRepository, users domain.User
 		options.Hasher = h
 	}
 	if options.Policy == (PasswordPolicy{}) {
-		options.Policy = PasswordPolicy{MinLength: 12, MaxLength: 128, RejectHandle: true, RejectCommon: true}
+		options.Policy = PasswordPolicy{MinLength: 12, MaxLength: 128, RejectUsername: true, RejectCommon: true}
 	}
 	if options.Policy.MinLength < 1 {
 		options.Policy.MinLength = 12
@@ -150,12 +150,12 @@ func NewPasswordService(credentials domain.PasswordRepository, users domain.User
 	if now == nil {
 		now = func() time.Time { return time.Now().UTC() }
 	}
-	if handle == nil {
-		handle = domain.HandlePolicyFunc(domain.LowerASCIIHandlePolicy)
+	if username == nil {
+		username = domain.UsernamePolicyFunc(domain.LowerASCIIUsernamePolicy)
 	}
-	return &PasswordService{credentials: credentials, users: users, hasher: options.Hasher, policy: options.Policy, now: now, handle: handle}, nil
+	return &PasswordService{credentials: credentials, users: users, hasher: options.Hasher, policy: options.Policy, now: now, username: username}, nil
 }
-func (s *PasswordService) Validate(handle, value string) error {
+func (s *PasswordService) Validate(username, value string) error {
 	if s == nil {
 		return errors.New("identity: password service is not configured")
 	}
@@ -179,7 +179,7 @@ func (s *PasswordService) Validate(handle, value string) error {
 	if s.policy.RequireUpper && !upper || s.policy.RequireLower && !lower || s.policy.RequireDigit && !digit || s.policy.RequireSymbol && !symbol {
 		return domain.ErrWeakPassword
 	}
-	if s.policy.RejectHandle && handle != "" && strings.EqualFold(strings.TrimSpace(handle), strings.TrimSpace(value)) {
+	if s.policy.RejectUsername && username != "" && strings.EqualFold(strings.TrimSpace(username), strings.TrimSpace(value)) {
 		return domain.ErrWeakPassword
 	}
 	if s.policy.RejectCommon && isCommon(value) {
@@ -223,8 +223,8 @@ func (s *PasswordService) AuthenticateUser(ctx context.Context, id domain.UserID
 	}
 	return nil
 }
-func (s *PasswordService) Set(ctx context.Context, id domain.UserID, handle, value string) error {
-	if e := s.Validate(handle, value); e != nil {
+func (s *PasswordService) Set(ctx context.Context, id domain.UserID, username, value string) error {
+	if e := s.Validate(username, value); e != nil {
 		return e
 	}
 	h, e := s.Hash(value)
@@ -242,15 +242,15 @@ func (s *PasswordService) SetHash(ctx context.Context, id domain.UserID, hash st
 	now := s.now().UTC()
 	return s.credentials.UpsertPasswordCredential(ctx, domain.PasswordCredential{UserID: id, Scheme: s.hasher.Scheme(), Hash: hash, PasswordChangedAt: now, CreatedAt: now, UpdatedAt: now})
 }
-func (s *PasswordService) Authenticate(ctx context.Context, handle, value string) (*domain.User, error) {
+func (s *PasswordService) Authenticate(ctx context.Context, username, value string) (*domain.User, error) {
 	if s.users == nil {
 		return nil, errors.New("identity: user directory is required")
 	}
-	norm, e := s.handle.Normalize(handle)
+	norm, e := s.username.Normalize(username)
 	if e != nil {
 		return nil, domain.ErrUnauthenticated
 	}
-	u, e := s.users.UserByHandle(ctx, norm)
+	u, e := s.users.UserByUsername(ctx, norm)
 	if e != nil {
 		if errors.Is(e, domain.ErrNotFound) {
 			return nil, domain.ErrUnauthenticated

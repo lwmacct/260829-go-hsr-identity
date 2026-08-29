@@ -34,7 +34,7 @@ func testModule(t *testing.T) (*identity.Module, *bun.DB) {
 	if err := identity.ApplySchema(context.Background(), db); err != nil {
 		t.Fatal(err)
 	}
-	m, err := identity.New(identity.Options{DB: db, Clock: func() time.Time { return time.Unix(100, 0).UTC() }, Password: identity.PasswordOptions{Policy: identity.PasswordPolicy{MinLength: 8, MaxLength: 64, RejectHandle: true}}, Session: identity.SessionOptions{Binding: identity.IPBinding{}}, HTTP: identity.HTTPOptions{RegistrationEnabled: true}})
+	m, err := identity.New(identity.Options{DB: db, Clock: func() time.Time { return time.Unix(100, 0).UTC() }, Password: identity.PasswordOptions{Policy: identity.PasswordPolicy{MinLength: 8, MaxLength: 64, RejectUsername: true}}, Session: identity.SessionOptions{Binding: identity.IPBinding{}}, HTTP: identity.HTTPOptions{RegistrationEnabled: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -44,15 +44,15 @@ func testModule(t *testing.T) (*identity.Module, *bun.DB) {
 func TestModuleLifecycle(t *testing.T) {
 	m, db := testModule(t)
 	ctx := context.Background()
-	u, err := m.RegisterUser(ctx, identity.UserCreateInput{Handle: "Alice", DisplayName: "Alice"}, "correct horse")
+	u, err := m.RegisterUser(ctx, identity.UserCreateInput{Username: "Alice", DisplayName: "Alice"}, "correct horse")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if u.Handle != "alice" {
-		t.Fatalf("handle = %q", u.Handle)
+	if u.Username != "alice" {
+		t.Fatalf("username = %q", u.Username)
 	}
-	if _, err := m.RegisterUser(ctx, identity.UserCreateInput{Handle: "alice"}, "correct horse"); !errors.Is(err, identity.ErrHandleTaken) && !errors.Is(err, identity.ErrConflict) {
-		t.Fatalf("duplicate handle err = %v", err)
+	if _, err := m.RegisterUser(ctx, identity.UserCreateInput{Username: "alice"}, "correct horse"); !errors.Is(err, identity.ErrUsernameTaken) && !errors.Is(err, identity.ErrConflict) {
+		t.Fatalf("duplicate username err = %v", err)
 	}
 	if _, err := m.Authenticate(ctx, "ALICE", "correct horse"); err != nil {
 		t.Fatal(err)
@@ -103,14 +103,14 @@ func TestBootstrapUserCreatesOnlyUnassignedRole(t *testing.T) {
 	}
 
 	admin, err := m.BootstrapUser(ctx, identity.BootstrapInput{
-		User:      identity.UserCreateInput{Handle: "Admin", DisplayName: "Administrator"},
+		User:      identity.UserCreateInput{Username: "Admin", DisplayName: "Administrator"},
 		Password:  "correct horse",
 		RoleCodes: []string{" ADMIN "},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if admin.Handle != "admin" || admin.DisplayName != "Administrator" {
+	if admin.Username != "admin" || admin.DisplayName != "Administrator" {
 		t.Fatalf("bootstrapped user = %#v", admin)
 	}
 	if _, err := m.Authenticate(ctx, "admin", "correct horse"); err != nil {
@@ -125,7 +125,7 @@ func TestBootstrapUserCreatesOnlyUnassignedRole(t *testing.T) {
 	}
 
 	if _, err := m.BootstrapUser(ctx, identity.BootstrapInput{
-		User:      identity.UserCreateInput{Handle: "another-admin"},
+		User:      identity.UserCreateInput{Username: "another-admin"},
 		Password:  "correct horse",
 		RoleCodes: []string{"admin"},
 	}); !errors.Is(err, identity.ErrBootstrapCompleted) {
@@ -136,7 +136,7 @@ func TestBootstrapUserCreatesOnlyUnassignedRole(t *testing.T) {
 func TestBootstrapUserRequiresRole(t *testing.T) {
 	m, _ := testModule(t)
 	_, err := m.BootstrapUser(context.Background(), identity.BootstrapInput{
-		User:     identity.UserCreateInput{Handle: "admin"},
+		User:     identity.UserCreateInput{Username: "admin"},
 		Password: "correct horse",
 	})
 	if err == nil {
@@ -147,7 +147,7 @@ func TestBootstrapUserRequiresRole(t *testing.T) {
 func TestLoginUpdatesLastLoginAndPasswordChangeRevokesSessions(t *testing.T) {
 	m, _ := testModule(t)
 	ctx := context.Background()
-	u, err := m.RegisterUser(ctx, identity.UserCreateInput{Handle: "login-user"}, "correct horse")
+	u, err := m.RegisterUser(ctx, identity.UserCreateInput{Username: "login-user"}, "correct horse")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -169,7 +169,7 @@ func TestLoginUpdatesLastLoginAndPasswordChangeRevokesSessions(t *testing.T) {
 func TestDisablingUserRevokesSessions(t *testing.T) {
 	m, _ := testModule(t)
 	ctx := context.Background()
-	u, err := m.RegisterUser(ctx, identity.UserCreateInput{Handle: "disable-user"}, "correct horse")
+	u, err := m.RegisterUser(ctx, identity.UserCreateInput{Username: "disable-user"}, "correct horse")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -188,7 +188,7 @@ func TestDisablingUserRevokesSessions(t *testing.T) {
 func TestResetPasswordRevokesSessions(t *testing.T) {
 	m, _ := testModule(t)
 	ctx := context.Background()
-	u, err := m.RegisterUser(ctx, identity.UserCreateInput{Handle: "reset-user"}, "correct horse")
+	u, err := m.RegisterUser(ctx, identity.UserCreateInput{Username: "reset-user"}, "correct horse")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -204,21 +204,21 @@ func TestResetPasswordRevokesSessions(t *testing.T) {
 	}
 }
 
-func TestResetPasswordUsesStoredHandlePolicy(t *testing.T) {
+func TestResetPasswordUsesStoredUsernamePolicy(t *testing.T) {
 	m, _ := testModule(t)
 	ctx := context.Background()
-	u, err := m.RegisterUser(ctx, identity.UserCreateInput{Handle: "same-as-password"}, "correct horse")
+	u, err := m.RegisterUser(ctx, identity.UserCreateInput{Username: "same-as-password"}, "correct horse")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := m.ResetPassword(ctx, u.ID, u.Handle); !errors.Is(err, identity.ErrWeakPassword) {
-		t.Fatalf("reset password equal to handle = %v", err)
+	if err := m.ResetPassword(ctx, u.ID, u.Username); !errors.Is(err, identity.ErrWeakPassword) {
+		t.Fatalf("reset password equal to username = %v", err)
 	}
 }
 
 func TestUserIDsAreUUIDv7(t *testing.T) {
 	m, _ := testModule(t)
-	u, err := m.RegisterUser(context.Background(), identity.UserCreateInput{Handle: "generated-id"}, "correct horse")
+	u, err := m.RegisterUser(context.Background(), identity.UserCreateInput{Username: "generated-id"}, "correct horse")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -231,14 +231,14 @@ func TestModuleTransactionRollback(t *testing.T) {
 	_, db := testModule(t)
 	storeSchema := identity.DatabaseSchema()
 	_ = storeSchema
-	// A duplicate handle must roll back the second account's password write;
+	// A duplicate username must roll back the second account's password write;
 	// the following query confirms only one user exists.
 	ctx := context.Background()
 	m := identity.MustNew(identity.Options{DB: db, Clock: func() time.Time { return time.Unix(200, 0).UTC() }, Password: identity.PasswordOptions{Policy: identity.PasswordPolicy{MinLength: 8}}})
-	if _, err := m.RegisterUser(ctx, identity.UserCreateInput{Handle: "bob"}, "correct horse"); err != nil {
+	if _, err := m.RegisterUser(ctx, identity.UserCreateInput{Username: "bob"}, "correct horse"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := m.RegisterUser(ctx, identity.UserCreateInput{Handle: "bob"}, "another horse"); err == nil {
+	if _, err := m.RegisterUser(ctx, identity.UserCreateInput{Username: "bob"}, "another horse"); err == nil {
 		t.Fatal("duplicate registration succeeded")
 	}
 	var count int
@@ -255,7 +255,7 @@ func TestHumaRoutes(t *testing.T) {
 	mux := http.NewServeMux()
 	api := humago.New(mux, huma.DefaultConfig("test", "1.0.0"))
 	m.Register(api)
-	body := `{"handle":"alice","password":"correct horse"}`
+	body := `{"username":"alice","password":"correct horse"}`
 	req := httptest.NewRequest(http.MethodPost, "/auth/register", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	res := httptest.NewRecorder()
@@ -374,10 +374,10 @@ func TestHumanChallengeRoutesAndModuleContract(t *testing.T) {
 		mux.ServeHTTP(res, req)
 		return res
 	}
-	if res := register(`{"handle":"challenge-user","password":"correct horse"}`); res.Code != http.StatusUnprocessableEntity {
+	if res := register(`{"username":"challenge-user","password":"correct horse"}`); res.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("missing challenge status = %d body = %s", res.Code, res.Body.String())
 	}
-	if res := register(`{"handle":"challenge-user","password":"correct horse","challenge":{"provider":"image","challengeId":"test-challenge","answer":"2468"}}`); res.Code != http.StatusCreated {
+	if res := register(`{"username":"challenge-user","password":"correct horse","challenge":{"provider":"image","challengeId":"test-challenge","answer":"2468"}}`); res.Code != http.StatusCreated {
 		t.Fatalf("valid challenge status = %d body = %s", res.Code, res.Body.String())
 	}
 }
@@ -385,7 +385,7 @@ func TestHumanChallengeRoutesAndModuleContract(t *testing.T) {
 func TestBearerAuthentication(t *testing.T) {
 	m, _ := testModule(t)
 	ctx := context.Background()
-	u, err := m.RegisterUser(ctx, identity.UserCreateInput{Handle: "bearer-user"}, "correct horse")
+	u, err := m.RegisterUser(ctx, identity.UserCreateInput{Username: "bearer-user"}, "correct horse")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -418,7 +418,7 @@ func TestSessionIdleTimeout(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	u, err := m.RegisterUser(context.Background(), identity.UserCreateInput{Handle: "idle-user"}, "correct horse")
+	u, err := m.RegisterUser(context.Background(), identity.UserCreateInput{Username: "idle-user"}, "correct horse")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -437,7 +437,7 @@ func TestAdminAuthorizerAndResetPolicy(t *testing.T) {
 	var actions []string
 	m, err := identity.New(identity.Options{
 		DB:       db,
-		Password: identity.PasswordOptions{Policy: identity.PasswordPolicy{MinLength: 8, RejectHandle: true}},
+		Password: identity.PasswordOptions{Policy: identity.PasswordPolicy{MinLength: 8, RejectUsername: true}},
 		HTTP:     identity.HTTPOptions{EnableAdminRoutes: true},
 		Authorizer: func(_ context.Context, _ *identity.Principal, action string) error {
 			actions = append(actions, action)
@@ -460,14 +460,14 @@ func TestAdminAuthorizerAndResetPolicy(t *testing.T) {
 	if err := m.SetRolePermissions(ctx, role.ID, []string{identity.ActionUserList, identity.ActionUserResetPassword}); err != nil {
 		t.Fatal(err)
 	}
-	admin, err := m.RegisterUser(ctx, identity.UserCreateInput{Handle: "admin-user"}, "correct horse")
+	admin, err := m.RegisterUser(ctx, identity.UserCreateInput{Username: "admin-user"}, "correct horse")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := m.SetUserRoles(ctx, admin.ID, []string{"test-admin"}); err != nil {
 		t.Fatal(err)
 	}
-	target, err := m.RegisterUser(ctx, identity.UserCreateInput{Handle: "target-password"}, "correct horse")
+	target, err := m.RegisterUser(ctx, identity.UserCreateInput{Username: "target-password"}, "correct horse")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -515,7 +515,7 @@ func TestRBACClaimsAndDefaultRoles(t *testing.T) {
 	if err := m.SetRolePermissions(ctx, role.ID, []string{"relay.read"}); err != nil {
 		t.Fatal(err)
 	}
-	user, err := m.RegisterUser(ctx, identity.UserCreateInput{Handle: "rbac-user"}, "correct horse")
+	user, err := m.RegisterUser(ctx, identity.UserCreateInput{Username: "rbac-user"}, "correct horse")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -556,7 +556,7 @@ func TestSessionCookieAttributes(t *testing.T) {
 	mux := http.NewServeMux()
 	api := humago.New(mux, huma.DefaultConfig("test", "1.0.0"))
 	m.Register(api)
-	req := httptest.NewRequest(http.MethodPost, "/auth/register", strings.NewReader(`{"handle":"cookie-user","password":"correct horse"}`))
+	req := httptest.NewRequest(http.MethodPost, "/auth/register", strings.NewReader(`{"username":"cookie-user","password":"correct horse"}`))
 	req.Header.Set("Content-Type", "application/json")
 	res := httptest.NewRecorder()
 	mux.ServeHTTP(res, req)

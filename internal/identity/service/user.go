@@ -12,26 +12,26 @@ import (
 )
 
 type UserService struct {
-	repo   domain.UserRepository
-	tx     domain.TxManager
-	handle domain.HandlePolicy
-	now    domain.Clock
+	repo     domain.UserRepository
+	tx       domain.TxManager
+	username domain.UsernamePolicy
+	now      domain.Clock
 }
 
-func NewUserService(repo domain.UserRepository, tx domain.TxManager, handle domain.HandlePolicy, now domain.Clock) (*UserService, error) {
+func NewUserService(repo domain.UserRepository, tx domain.TxManager, username domain.UsernamePolicy, now domain.Clock) (*UserService, error) {
 	if repo == nil {
 		return nil, errors.New("identity: user repository is required")
 	}
-	if handle == nil {
-		handle = domain.HandlePolicyFunc(domain.LowerASCIIHandlePolicy)
+	if username == nil {
+		username = domain.UsernamePolicyFunc(domain.LowerASCIIUsernamePolicy)
 	}
 	if now == nil {
 		now = func() time.Time { return time.Now().UTC() }
 	}
-	return &UserService{repo: repo, tx: tx, handle: handle, now: now}, nil
+	return &UserService{repo: repo, tx: tx, username: username, now: now}, nil
 }
 func (s *UserService) Create(ctx context.Context, in UserCreateInput) (*domain.User, error) {
-	h, e := s.handle.Normalize(in.Handle)
+	h, e := s.username.Normalize(in.Username)
 	if e != nil {
 		return nil, e
 	}
@@ -52,27 +52,27 @@ func (s *UserService) Create(ctx context.Context, in UserCreateInput) (*domain.U
 	if state == domain.StateDisabled {
 		disabled = &now
 	}
-	return s.repo.CreateUser(ctx, domain.UserCreate{ID: id, Handle: h, DisplayName: display, Email: strings.TrimSpace(in.Email), AvatarURL: strings.TrimSpace(in.AvatarURL), State: state, DisabledAt: disabled, CreatedAt: now, UpdatedAt: now})
+	return s.repo.CreateUser(ctx, domain.UserCreate{ID: id, Username: h, DisplayName: display, Email: strings.TrimSpace(in.Email), AvatarURL: strings.TrimSpace(in.AvatarURL), State: state, DisabledAt: disabled, CreatedAt: now, UpdatedAt: now})
 }
-func (s *UserService) CreateWithUniqueHandle(ctx context.Context, in UserCreateInput) (*domain.User, error) {
-	base, e := s.handle.Normalize(in.Handle)
+func (s *UserService) CreateWithUniqueUsername(ctx context.Context, in UserCreateInput) (*domain.User, error) {
+	base, e := s.username.Normalize(in.Username)
 	if e != nil {
 		return nil, e
 	}
 	for i := 0; i < 100; i++ {
-		in.Handle = base
+		in.Username = base
 		if i > 0 {
-			in.Handle = fmt.Sprintf("%s-%d", base, i+1)
+			in.Username = fmt.Sprintf("%s-%d", base, i+1)
 		}
 		u, e := s.Create(ctx, in)
 		if e == nil {
 			return u, nil
 		}
-		if !errors.Is(e, domain.ErrHandleTaken) {
+		if !errors.Is(e, domain.ErrUsernameTaken) {
 			return nil, e
 		}
 	}
-	return nil, domain.ErrHandleTaken
+	return nil, domain.ErrUsernameTaken
 }
 func (s *UserService) UserByID(ctx context.Context, id domain.UserID) (*domain.User, error) {
 	normalized, err := domain.NormalizeUserID(id)
@@ -81,12 +81,12 @@ func (s *UserService) UserByID(ctx context.Context, id domain.UserID) (*domain.U
 	}
 	return s.repo.GetUser(ctx, normalized)
 }
-func (s *UserService) UserByHandle(ctx context.Context, h string) (*domain.User, error) {
-	n, e := s.handle.Normalize(h)
+func (s *UserService) UserByUsername(ctx context.Context, h string) (*domain.User, error) {
+	n, e := s.username.Normalize(h)
 	if e != nil {
 		return nil, e
 	}
-	return s.repo.GetUserByHandle(ctx, n)
+	return s.repo.GetUserByUsername(ctx, n)
 }
 func (s *UserService) Users(ctx context.Context, f domain.UserFilter) ([]domain.User, int, error) {
 	if f.State != "" && f.State != domain.StateActive && f.State != domain.StateDisabled {

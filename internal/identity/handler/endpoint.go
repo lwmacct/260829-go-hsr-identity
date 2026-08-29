@@ -292,7 +292,7 @@ func mapError(err error, login bool) error {
 		return huma.Error403Forbidden("user is disabled")
 	case errors.Is(err, domain.ErrNotFound):
 		return huma.Error404NotFound("not found")
-	case errors.Is(err, domain.ErrConflict), errors.Is(err, domain.ErrHandleTaken):
+	case errors.Is(err, domain.ErrConflict), errors.Is(err, domain.ErrUsernameTaken):
 		return huma.Error409Conflict("identity conflict")
 	case errors.Is(err, domain.ErrInvalid), errors.Is(err, domain.ErrWeakPassword), errors.Is(err, domain.ErrInvalidState), errors.Is(err, domain.ErrInvalidRequestMeta):
 		return huma.Error422UnprocessableEntity("invalid identity request")

@@ -49,7 +49,7 @@ if err := identity.ApplySchema(ctx, db); err != nil { return err }
 ## 公共能力
 
 ```go
-user, err := mod.RegisterUser(ctx, identity.UserCreateInput{Handle: "alice"}, password)
+user, err := mod.RegisterUser(ctx, identity.UserCreateInput{Username: "alice"}, password)
 user, err = mod.Authenticate(ctx, "alice", password)
 user, issued, err := mod.Login(ctx, "alice", password, identity.RequestMeta{ClientIP: "203.0.113.10"})
 principal, err := mod.ResolveSession(ctx, issued.Token, identity.RequestMeta{ClientIP: "203.0.113.10"})
@@ -65,7 +65,7 @@ err = mod.SetUserRoles(ctx, user.ID, []string{role.Code})
 
 // Bootstrap an initial privileged account from an explicit operator command:
 user, err := mod.BootstrapUser(ctx, identity.BootstrapInput{
-    User: identity.UserCreateInput{Handle: "admin", DisplayName: "Administrator"},
+    User: identity.UserCreateInput{Username: "admin", DisplayName: "Administrator"},
     Password: password,
     RoleCodes: []string{"admin"},
 })

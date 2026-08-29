@@ -10,7 +10,7 @@ import (
 type UserModel struct {
 	bun.BaseModel `bun:"table:identity_users,alias:u"`
 	ID            UserID     `bun:"id,pk,type:uuid"`
-	Handle        string     `bun:"handle,notnull,unique"`
+	Username      string     `bun:"username,notnull,unique"`
 	DisplayName   string     `bun:"display_name,notnull"`
 	Email         string     `bun:"email,notnull"`
 	AvatarURL     string     `bun:"avatar_url,notnull"`

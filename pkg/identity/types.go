@@ -36,8 +36,8 @@ type SessionResolver = domain.SessionResolver
 type AuthorizationRepository = domain.AuthorizationRepository
 type ClaimsResolver = domain.ClaimsResolver
 type Clock = domain.Clock
-type HandlePolicy = domain.HandlePolicy
-type HandlePolicyFunc = domain.HandlePolicyFunc
+type UsernamePolicy = domain.UsernamePolicy
+type UsernamePolicyFunc = domain.UsernamePolicyFunc
 type ValidationError = domain.ValidationError
 type HumanChallengeConfig = domain.HumanChallengeConfig
 type HumanChallenge = domain.HumanChallenge
@@ -71,8 +71,8 @@ var (
 	ErrInvalid                     = domain.ErrInvalid
 	ErrNotFound                    = domain.ErrNotFound
 	ErrConflict                    = domain.ErrConflict
-	ErrInvalidHandle               = domain.ErrInvalidHandle
-	ErrHandleTaken                 = domain.ErrHandleTaken
+	ErrInvalidUsername             = domain.ErrInvalidUsername
+	ErrUsernameTaken               = domain.ErrUsernameTaken
 	ErrBootstrapCompleted          = domain.ErrBootstrapCompleted
 	ErrInvalidUser                 = domain.ErrInvalidUser
 	ErrDisabled                    = domain.ErrDisabled
@@ -91,8 +91,8 @@ var (
 	ErrHumanChallengeLimitExceeded = domain.ErrHumanChallengeLimitExceeded
 )
 
-var LowerASCIIHandlePolicy = domain.LowerASCIIHandlePolicy
-var TrimHandlePolicy = domain.TrimHandlePolicy
+var LowerASCIIUsernamePolicy = domain.LowerASCIIUsernamePolicy
+var TrimUsernamePolicy = domain.TrimUsernamePolicy
 var NormalizeUserID = domain.NormalizeUserID
 var NormalizeSessionID = domain.NormalizeSessionID
 var ValidateUserID = domain.ValidateUserID

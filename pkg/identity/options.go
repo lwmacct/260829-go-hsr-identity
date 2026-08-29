@@ -36,14 +36,14 @@ type Argon2idParams struct {
 }
 
 type PasswordPolicy struct {
-	MinLength     int
-	MaxLength     int
-	RequireUpper  bool
-	RequireLower  bool
-	RequireDigit  bool
-	RequireSymbol bool
-	RejectHandle  bool
-	RejectCommon  bool
+	MinLength      int
+	MaxLength      int
+	RequireUpper   bool
+	RequireLower   bool
+	RequireDigit   bool
+	RequireSymbol  bool
+	RejectUsername bool
+	RejectCommon   bool
 }
 
 type PasswordOptions struct {
@@ -117,14 +117,14 @@ type HTTPOptions struct {
 }
 
 type Options struct {
-	DB            *bun.DB
-	Clock         Clock
-	HandlePolicy  HandlePolicy
-	Password      PasswordOptions
-	Session       SessionOptions
-	Authorization AuthorizationOptions
-	HTTP          HTTPOptions
-	Authorizer    Authorizer
+	DB             *bun.DB
+	Clock          Clock
+	UsernamePolicy UsernamePolicy
+	Password       PasswordOptions
+	Session        SessionOptions
+	Authorization  AuthorizationOptions
+	HTTP           HTTPOptions
+	Authorizer     Authorizer
 }
 
 type Authorizer func(context.Context, *Principal, string) error
@@ -138,7 +138,7 @@ type RequestMetaResolver func(*http.Request) (RequestMeta, error)
 // for zero-valued nested options.
 func DefaultOptions() Options {
 	return Options{
-		Password: PasswordOptions{Policy: PasswordPolicy{MinLength: 12, MaxLength: 128, RejectHandle: true, RejectCommon: true}},
+		Password: PasswordOptions{Policy: PasswordPolicy{MinLength: 12, MaxLength: 128, RejectUsername: true, RejectCommon: true}},
 		Session:  SessionOptions{TTL: 30 * 24 * time.Hour, TouchInterval: 5 * time.Minute, TokenBytes: 32, Binding: NoBinding{}},
 		HTTP:     HTTPOptions{AuthPrefix: "/auth", AdminPrefix: "/admin", CookieName: "identity_session", CookiePath: "/", SameSite: http.SameSiteLaxMode},
 	}

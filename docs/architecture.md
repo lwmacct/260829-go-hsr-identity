@@ -27,7 +27,7 @@ account, password credential, and role bindings atomically. PostgreSQL uses
 
 - Passwords use Argon2id and are never stored in plaintext.
 - Session tokens are random opaque values; only SHA-256 hashes are stored.
-- Login failures do not reveal whether a handle exists.
+- Login failures do not reveal whether a username exists.
 - Successful password and external logins update `last_login_at` in the same transaction that creates the Session.
 - Disabling a user revokes sessions.
 - Password changes and resets revoke old sessions.
