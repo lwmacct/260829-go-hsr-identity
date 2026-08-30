@@ -9,14 +9,21 @@ import (
 	"uuid"
 
 	"github.com/lwmacct/260829-go-hsr-identity/pkg/identity/domain"
+	"github.com/uptrace/bun"
 )
 
+// UserDeleteParticipant lets a host remove records outside identity while the
+// identity delete transaction is still open. The callback must use the
+// supplied transaction handle and must not start another transaction.
+type UserDeleteParticipant func(context.Context, bun.IDB, []domain.User) error
+
 type UserService struct {
-	repo             domain.UserRepository
-	tx               domain.TxManager
-	username         domain.UsernamePolicy
-	now              domain.Clock
-	beforeDeleteHook domain.UserDeleteHook
+	repo              domain.UserRepository
+	tx                domain.TxManager
+	username          domain.UsernamePolicy
+	now               domain.Clock
+	events            domain.EventSink
+	deleteParticipant UserDeleteParticipant
 }
 
 func NewUserService(repo domain.UserRepository, tx domain.TxManager, username domain.UsernamePolicy, now domain.Clock) (*UserService, error) {
@@ -32,9 +39,15 @@ func NewUserService(repo domain.UserRepository, tx domain.TxManager, username do
 	return &UserService{repo: repo, tx: tx, username: username, now: now}, nil
 }
 
-func (s *UserService) SetBeforeDeleteHook(hook domain.UserDeleteHook) {
+func (s *UserService) SetDeleteParticipant(participant UserDeleteParticipant) {
 	if s != nil {
-		s.beforeDeleteHook = hook
+		s.deleteParticipant = participant
+	}
+}
+
+func (s *UserService) SetEventSink(sink domain.EventSink) {
+	if s != nil {
+		s.events = sink
 	}
 }
 
@@ -54,13 +67,17 @@ func (s *UserService) Create(ctx context.Context, in UserCreateInput) (*domain.U
 	if state != domain.StateActive && state != domain.StateDisabled {
 		return nil, domain.ErrInvalidState
 	}
-	id := domain.UserID(uuid.NewV7().String())
+	id := uuid.NewV7()
 	now := s.now().UTC()
 	var disabled *time.Time
 	if state == domain.StateDisabled {
 		disabled = &now
 	}
-	return s.repo.CreateUser(ctx, domain.UserCreate{ID: id, Username: h, DisplayName: display, Email: strings.TrimSpace(in.Email), AvatarURL: strings.TrimSpace(in.AvatarURL), State: state, DisabledAt: disabled, CreatedAt: now, UpdatedAt: now})
+	user, err := s.repo.CreateUser(ctx, domain.UserCreate{ID: id, Username: h, UsernameKey: domain.UsernameKey(h), DisplayName: display, Email: strings.TrimSpace(in.Email), AvatarURL: strings.TrimSpace(in.AvatarURL), State: state, DisabledAt: disabled, CreatedAt: now, UpdatedAt: now})
+	if err == nil {
+		emitEvent(ctx, s.events, domain.Event{Type: domain.EventUserCreated, At: now, UserID: user.ID, Username: user.Username})
+	}
+	return user, err
 }
 func (s *UserService) CreateWithUniqueUsername(ctx context.Context, in UserCreateInput) (*domain.User, error) {
 	base, e := s.username.Normalize(in.Username)
@@ -94,7 +111,7 @@ func (s *UserService) UserByUsername(ctx context.Context, h string) (*domain.Use
 	if e != nil {
 		return nil, e
 	}
-	return s.repo.GetUserByUsername(ctx, n)
+	return s.repo.GetUserByUsernameKey(ctx, domain.UsernameKey(n))
 }
 func (s *UserService) Users(ctx context.Context, f domain.UserFilter) ([]domain.User, int, error) {
 	if f.State != "" && f.State != domain.StateActive && f.State != domain.StateDisabled {
@@ -110,7 +127,11 @@ func (s *UserService) UpdateProfile(ctx context.Context, id domain.UserID, in Us
 	if id, err = domain.NormalizeUserID(id); err != nil {
 		return nil, err
 	}
-	return s.repo.UpdateUserProfile(ctx, id, domain.UserProfilePatch{DisplayName: strings.TrimSpace(in.DisplayName), Email: strings.TrimSpace(in.Email), AvatarURL: strings.TrimSpace(in.AvatarURL), UpdatedAt: s.now().UTC()})
+	user, err := s.repo.UpdateUserProfile(ctx, id, domain.UserProfilePatch{DisplayName: strings.TrimSpace(in.DisplayName), Email: strings.TrimSpace(in.Email), AvatarURL: strings.TrimSpace(in.AvatarURL), UpdatedAt: s.now().UTC()})
+	if err == nil {
+		emitEvent(ctx, s.events, domain.Event{Type: domain.EventUserUpdated, At: user.UpdatedAt, UserID: user.ID, Username: user.Username})
+	}
+	return user, err
 }
 func (s *UserService) SetState(ctx context.Context, ids []domain.UserID, state domain.State) error {
 	if len(ids) == 0 {
@@ -131,7 +152,7 @@ func (s *UserService) SetState(ctx context.Context, ids []domain.UserID, state d
 	if s.tx == nil {
 		return errors.New("identity: transaction manager is required for state changes")
 	}
-	return s.tx.WithinTx(ctx, func(c context.Context, u domain.UnitOfWork) error {
+	err = s.tx.WithinTx(ctx, func(c context.Context, u domain.UnitOfWork) error {
 		updated, e := u.Users().UpdateUserState(c, ids, state, disabled, now)
 		if e != nil {
 			return e
@@ -144,6 +165,15 @@ func (s *UserService) SetState(ctx context.Context, ids []domain.UserID, state d
 		}
 		return nil
 	})
+	if err == nil {
+		for _, id := range ids {
+			emitEvent(ctx, s.events, domain.Event{Type: domain.EventUserStateChanged, At: now, UserID: id, Attributes: map[string]string{"state": string(state)}})
+			if state == domain.StateDisabled {
+				emitEvent(ctx, s.events, domain.Event{Type: domain.EventUserSessionsRevoked, At: now, UserID: id, Attributes: map[string]string{"reason": "user_disabled"}})
+			}
+		}
+	}
+	return err
 }
 func (s *UserService) MarkLogin(ctx context.Context, id domain.UserID) error {
 	var err error
@@ -160,23 +190,58 @@ func (s *UserService) DeleteUsers(ctx context.Context, ids []domain.UserID) erro
 	if ids, err = normalizeUserIDs(ids); err != nil {
 		return err
 	}
-	if s.beforeDeleteHook != nil {
-		if err := s.beforeDeleteHook(ctx, ids); err != nil {
-			return err
-		}
-	}
 	if s.tx == nil {
 		return errors.New("identity: transaction manager is required for deleting users")
 	}
-	return s.tx.WithinTx(ctx, func(c context.Context, u domain.UnitOfWork) error {
-		if e := u.Sessions().DeleteSessionsForUsers(c, ids); e != nil {
-			return e
+	if participantTx, ok := s.tx.(domain.TxManagerWithDB); ok {
+		var deleted []domain.User
+		err := participantTx.WithinTxDB(ctx, func(c context.Context, db bun.IDB, u domain.UnitOfWork) error {
+			users := make([]domain.User, 0, len(ids))
+			for _, id := range ids {
+				user, err := u.Users().GetUser(c, id)
+				if err != nil {
+					return err
+				}
+				users = append(users, *user)
+			}
+			deleted = users
+			if s.deleteParticipant != nil {
+				if err := s.deleteParticipant(c, db, users); err != nil {
+					return err
+				}
+			}
+			return deleteUsersInUnit(c, u, ids)
+		})
+		if err == nil {
+			for _, user := range deleted {
+				emitEvent(ctx, s.events, domain.Event{Type: domain.EventUserDeleted, At: s.now().UTC(), UserID: user.ID, Username: user.Username})
+			}
 		}
-		if e := u.Passwords().DeletePasswordCredentials(c, ids); e != nil {
-			return e
-		}
-		return u.Users().DeleteUsers(c, ids)
+		return err
+	}
+	if s.deleteParticipant != nil {
+		return errors.New("identity: delete participant requires a transaction manager with database access")
+	}
+	err = s.tx.WithinTx(ctx, func(c context.Context, u domain.UnitOfWork) error {
+		return deleteUsersInUnit(c, u, ids)
 	})
+	if err == nil {
+		now := s.now().UTC()
+		for _, id := range ids {
+			emitEvent(ctx, s.events, domain.Event{Type: domain.EventUserDeleted, At: now, UserID: id})
+		}
+	}
+	return err
+}
+
+func deleteUsersInUnit(c context.Context, u domain.UnitOfWork, ids []domain.UserID) error {
+	if e := u.Sessions().DeleteSessionsForUsers(c, ids); e != nil {
+		return e
+	}
+	if e := u.Passwords().DeletePasswordCredentials(c, ids); e != nil {
+		return e
+	}
+	return u.Users().DeleteUsers(c, ids)
 }
 
 func normalizeUserIDs(ids []domain.UserID) ([]domain.UserID, error) {

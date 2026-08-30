@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"errors"
+	"strconv"
 	"strings"
 	"time"
 	"uuid"
@@ -20,13 +21,21 @@ type SessionService struct {
 	binding          BindingPolicy
 	now              domain.Clock
 	claims           domain.ClaimsResolver
+	events           domain.EventSink
 }
 
 func (s *SessionService) withRepositories(repo domain.SessionRepository, users domain.UserDirectory) *SessionService {
 	clone := *s
 	clone.repo = repo
 	clone.users = users
+	clone.events = nil
 	return &clone
+}
+
+func (s *SessionService) SetEventSink(sink domain.EventSink) {
+	if s != nil {
+		s.events = sink
+	}
 }
 
 func NewSessionService(repo domain.SessionRepository, users domain.UserDirectory, o SessionOptions, now domain.Clock) (*SessionService, error) {
@@ -90,12 +99,13 @@ func (s *SessionService) Create(ctx context.Context, id domain.UserID, meta doma
 	if e != nil {
 		return nil, e
 	}
-	sid := domain.SessionID(uuid.NewV7().String())
-	r := &domain.SessionRecord{ID: sid, TokenHash: domain.HashBytes(token), UserID: id, LoginIP: meta.ClientIP, LastIP: meta.ClientIP, BindingHash: binding, UserAgentHash: domain.HashBytes(meta.UserAgent), ExpiresAt: now.Add(s.ttl), CreatedAt: now, LastSeenAt: now}
+	sid := uuid.NewV7()
+	r := &domain.SessionRecord{ID: sid, TokenHash: domain.HashBytes(token), UserID: id, LoginIP: meta.ClientIP, LastIP: meta.ClientIP, BindingHash: binding, ExpiresAt: now.Add(s.ttl), CreatedAt: now, LastSeenAt: now}
 	if e = s.repo.CreateSession(ctx, *r); e != nil {
 		return nil, e
 	}
-	return &IssuedSession{Session: r, Token: token}, nil
+	emitEvent(ctx, s.events, domain.Event{Type: domain.EventSessionCreated, At: now, UserID: id, SessionID: sid, RequestMeta: meta})
+	return &IssuedSession{Session: sessionView(r), Token: token}, nil
 }
 func (s *SessionService) Resolve(ctx context.Context, token string, meta domain.RequestMeta) (*domain.Principal, error) {
 	if strings.TrimSpace(token) == "" {
@@ -155,7 +165,7 @@ func (s *SessionService) Resolve(ctx context.Context, token string, meta domain.
 		return nil, domain.ErrUnauthenticated
 	}
 	if s.touch == 0 || now.Sub(r.LastSeenAt) >= s.touch {
-		if e = s.repo.TouchSession(ctx, r.ID, meta.ClientIP, now); e != nil && !errors.Is(e, domain.ErrNotFound) {
+		if e = s.repo.TouchSession(ctx, r.ID, meta.ClientIP, now.Add(-s.touch), now); e != nil && !errors.Is(e, domain.ErrNotFound) {
 			return nil, e
 		}
 	}
@@ -167,6 +177,46 @@ func (s *SessionService) Resolve(ctx context.Context, token string, meta domain.
 		}
 	}
 	return &domain.Principal{Subject: u.ID, User: u, Claims: claims, AuthenticatedAt: r.CreatedAt, SessionID: r.ID, ExpiresAt: r.ExpiresAt}, nil
+}
+func (s *SessionService) ListForUser(ctx context.Context, id domain.UserID) ([]domain.Session, error) {
+	if _, err := domain.NormalizeUserID(id); err != nil {
+		return nil, err
+	}
+	records, err := s.repo.ListSessionsForUser(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]domain.Session, len(records))
+	for i := range records {
+		out[i] = *sessionView(&records[i])
+	}
+	return out, nil
+}
+func (s *SessionService) RevokeByID(ctx context.Context, id domain.SessionID, reason string) error {
+	if _, err := domain.NormalizeSessionID(id); err != nil {
+		return err
+	}
+	reason = strings.TrimSpace(reason)
+	now := s.now().UTC()
+	if err := s.repo.RevokeSession(ctx, id, reason, "", now); err != nil {
+		return err
+	}
+	emitEvent(ctx, s.events, domain.Event{Type: domain.EventSessionRevoked, At: now, SessionID: id, Attributes: map[string]string{"reason": reason}})
+	return nil
+}
+func (s *SessionService) DeleteExpired(ctx context.Context) (int64, error) {
+	now := s.now().UTC()
+	count, err := s.repo.DeleteExpiredSessions(ctx, now)
+	if err == nil && count > 0 {
+		emitEvent(ctx, s.events, domain.Event{Type: domain.EventExpiredSessionsDeleted, At: now, Attributes: map[string]string{"count": strconv.FormatInt(count, 10)}})
+	}
+	return count, err
+}
+func sessionView(record *domain.SessionRecord) *domain.Session {
+	if record == nil {
+		return nil
+	}
+	return &domain.Session{ID: record.ID, UserID: record.UserID, LoginIP: record.LoginIP, LastIP: record.LastIP, ExpiresAt: record.ExpiresAt, CreatedAt: record.CreatedAt, LastSeenAt: record.LastSeenAt, RevokedAt: record.RevokedAt, RevokedReason: record.RevokedReason}
 }
 func (s *SessionService) Revoke(ctx context.Context, token, reason string, meta domain.RequestMeta) error {
 	if strings.TrimSpace(token) == "" {
@@ -187,14 +237,28 @@ func (s *SessionService) Revoke(ctx context.Context, token, reason string, meta 
 	if err != nil {
 		return domain.ErrUnauthenticated
 	}
-	return s.repo.RevokeSession(ctx, id, reason, meta.ClientIP, s.now().UTC())
+	reason = strings.TrimSpace(reason)
+	now := s.now().UTC()
+	if err := s.repo.RevokeSession(ctx, id, reason, meta.ClientIP, now); err != nil {
+		return err
+	}
+	emitEvent(ctx, s.events, domain.Event{Type: domain.EventSessionRevoked, At: now, UserID: r.UserID, SessionID: id, RequestMeta: meta, Attributes: map[string]string{"reason": reason}})
+	return nil
 }
 func (s *SessionService) RevokeForUsers(ctx context.Context, ids []domain.UserID, reason string) error {
 	normalized, err := normalizeUserIDs(ids)
 	if err != nil {
 		return err
 	}
-	return s.repo.RevokeSessionsForUsers(ctx, normalized, reason, s.now().UTC())
+	reason = strings.TrimSpace(reason)
+	now := s.now().UTC()
+	if err := s.repo.RevokeSessionsForUsers(ctx, normalized, reason, now); err != nil {
+		return err
+	}
+	for _, id := range normalized {
+		emitEvent(ctx, s.events, domain.Event{Type: domain.EventUserSessionsRevoked, At: now, UserID: id, Attributes: map[string]string{"reason": reason}})
+	}
+	return nil
 }
 func (s *SessionService) DeleteForUsers(ctx context.Context, ids []domain.UserID) error {
 	normalized, err := normalizeUserIDs(ids)

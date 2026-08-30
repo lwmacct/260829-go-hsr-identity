@@ -7,9 +7,11 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
+	"uuid"
 
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/danielgtaylor/huma/v2/adapters/humago"
@@ -61,7 +63,7 @@ func TestModuleLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if issued.Token == "" || issued.Session.ID == "" {
+	if issued.Token == "" || issued.Session.ID == uuid.Nil() {
 		t.Fatalf("issued session = %#v", issued)
 	}
 	p, err := m.ResolveSession(ctx, issued.Token, identity.RequestMeta{ClientIP: "127.0.0.1", UserAgent: "test"})
@@ -95,15 +97,18 @@ func TestModuleLifecycle(t *testing.T) {
 	}
 }
 
-func TestModuleDeleteUsersCallsBeforeDeleteHook(t *testing.T) {
+func TestModuleDeleteUsersCallsDeleteParticipant(t *testing.T) {
 	_, db := testModule(t)
 	ctx := context.Background()
-	var got []identity.UserID
+	var got []identity.User
 	m, err := identity.New(identity.Options{
 		DB:       db,
 		Password: identity.PasswordOptions{Policy: identity.PasswordPolicy{MinLength: 8}},
-		BeforeDeleteUsers: func(_ context.Context, ids []identity.UserID) error {
-			got = append(got, ids...)
+		DeleteParticipant: func(_ context.Context, tx bun.IDB, users []identity.User) error {
+			if tx == nil {
+				t.Fatal("delete transaction is nil")
+			}
+			got = append(got, users...)
 			return nil
 		},
 	})
@@ -117,21 +122,60 @@ func TestModuleDeleteUsersCallsBeforeDeleteHook(t *testing.T) {
 	if err := m.DeleteUsers(ctx, []identity.UserID{u.ID}); err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 1 || got[0] != u.ID {
-		t.Fatalf("delete hook ids = %#v, want [%s]", got, u.ID)
+	if len(got) != 1 || got[0].ID != u.ID {
+		t.Fatalf("delete participant users = %#v, want [%s]", got, u.ID)
 	}
 }
 
-func TestModuleDeleteUsersAbortsWhenBeforeDeleteHookFails(t *testing.T) {
+func TestModuleDeleteUsersEmitsEventAfterCommit(t *testing.T) {
 	_, db := testModule(t)
 	ctx := context.Background()
-	want := errors.New("dependent cleanup failed")
+	var observed identity.Event
+	var visibleAfterCommit bool
 	m, err := identity.New(identity.Options{
 		DB:       db,
 		Password: identity.PasswordOptions{Policy: identity.PasswordPolicy{MinLength: 8}},
-		BeforeDeleteUsers: func(context.Context, []identity.UserID) error {
+		Events: identity.EventSinkFunc(func(observerCtx context.Context, event identity.Event) {
+			if event.Type != identity.EventUserDeleted {
+				return
+			}
+			observed = event
+			var count int
+			if err := db.NewRaw("SELECT count(*) FROM identity_users WHERE id = ?", event.UserID.String()).Scan(observerCtx, &count); err != nil {
+				t.Fatalf("query committed user deletion: %v", err)
+			}
+			visibleAfterCommit = count == 0
+		}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	user, err := m.RegisterUser(ctx, identity.UserCreateInput{Username: "after-delete"}, "correct horse")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.DeleteUsers(ctx, []identity.UserID{user.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if observed.UserID != user.ID || observed.Username != user.Username || !visibleAfterCommit {
+		t.Fatalf("observer user=%#v committed=%v", observed, visibleAfterCommit)
+	}
+}
+
+func TestModuleDeleteUsersRollsBackWhenDeleteParticipantFails(t *testing.T) {
+	_, db := testModule(t)
+	ctx := context.Background()
+	want := errors.New("dependent cleanup failed")
+	var observed []identity.Event
+	m, err := identity.New(identity.Options{
+		DB:       db,
+		Password: identity.PasswordOptions{Policy: identity.PasswordPolicy{MinLength: 8}},
+		DeleteParticipant: func(context.Context, bun.IDB, []identity.User) error {
 			return want
 		},
+		Events: identity.EventSinkFunc(func(_ context.Context, event identity.Event) {
+			observed = append(observed, event)
+		}),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -145,6 +189,38 @@ func TestModuleDeleteUsersAbortsWhenBeforeDeleteHookFails(t *testing.T) {
 	}
 	if _, err := m.UserByID(ctx, u.ID); err != nil {
 		t.Fatalf("user after aborted delete = %v", err)
+	}
+	for _, event := range observed {
+		if event.Type == identity.EventUserDeleted {
+			t.Fatal("delete event ran after a rolled-back deletion")
+		}
+	}
+}
+
+func TestUnicodeUsernameKeyPreservesDisplayAndRejectsEquivalentDuplicate(t *testing.T) {
+	_, db := testModule(t)
+	m, err := identity.New(identity.Options{
+		DB:             db,
+		UsernamePolicy: identity.UsernamePolicyFunc(identity.TrimUsernamePolicy),
+		Password:       identity.PasswordOptions{Policy: identity.PasswordPolicy{MinLength: 8}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	user, err := m.RegisterUser(ctx, identity.UserCreateInput{Username: "Élodie"}, "correct horse")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if user.Username != "Élodie" {
+		t.Fatalf("stored username = %q", user.Username)
+	}
+	found, err := m.UserByUsername(ctx, "E\u0301LODIE")
+	if err != nil || found.ID != user.ID {
+		t.Fatalf("canonical lookup user=%#v err=%v", found, err)
+	}
+	if _, err := m.RegisterUser(ctx, identity.UserCreateInput{Username: "E\u0301LODIE"}, "another horse"); !errors.Is(err, identity.ErrUsernameTaken) && !errors.Is(err, identity.ErrConflict) {
+		t.Fatalf("equivalent username error = %v", err)
 	}
 }
 
@@ -277,6 +353,45 @@ func TestUserIDsAreUUIDv7(t *testing.T) {
 	}
 	if err := identity.ValidateUserID(u.ID); err != nil {
 		t.Fatalf("generated ID is not UUIDv7: %v", err)
+	}
+}
+
+func TestSQLiteSchemaRejectsMalformedAndNonV7IDs(t *testing.T) {
+	_, db := testModule(t)
+	ctx := context.Background()
+	now := time.Unix(100, 0).UTC()
+	cases := []string{
+		"not-a-uuid-----7---------------------",
+		"00000000-0000-4000-8000-000000000000",
+		"00000000-0000-7000-0000-000000000000",
+	}
+	for _, id := range cases {
+		_, err := db.NewRaw(
+			"INSERT INTO identity_users (id, username, username_key, display_name, email, avatar_url, state, created_at, updated_at) VALUES (?, ?, ?, ?, '', '', 'active', ?, ?)",
+			id, id, id, id, now, now,
+		).Exec(ctx)
+		if err == nil {
+			t.Fatalf("invalid UUIDv7 %q was accepted", id)
+		}
+	}
+}
+
+func TestValidateSchemaRejectsMissingAndIncompleteSchema(t *testing.T) {
+	sqlDB, err := sql.Open(sqliteshim.ShimName, "file:identity-schema-validation?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sqlDB.Close() })
+	db := bun.NewDB(sqlDB, sqlitedialect.New())
+	t.Cleanup(func() { _ = db.Close() })
+	if err := identity.ValidateSchema(context.Background(), db); err == nil || !strings.Contains(err.Error(), "missing identity_") {
+		t.Fatalf("empty schema validation error = %v", err)
+	}
+	if _, err := db.NewRaw("CREATE TABLE identity_users (id TEXT PRIMARY KEY)").Exec(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := identity.ValidateSchema(context.Background(), db); err == nil || !strings.Contains(err.Error(), "identity_users.username") {
+		t.Fatalf("incomplete schema validation error = %v", err)
 	}
 }
 
@@ -485,6 +600,161 @@ func TestSessionIdleTimeout(t *testing.T) {
 	}
 }
 
+func TestSessionManagementLifecycle(t *testing.T) {
+	_, db := testModule(t)
+	now := time.Unix(2_000, 0).UTC()
+	m, err := identity.New(identity.Options{
+		DB:       db,
+		Clock:    func() time.Time { return now },
+		Password: identity.PasswordOptions{Policy: identity.PasswordPolicy{MinLength: 8}},
+		Session:  identity.SessionOptions{TTL: time.Hour},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	user, err := m.RegisterUser(ctx, identity.UserCreateInput{Username: "session-owner"}, "correct horse")
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := m.CreateSession(ctx, user.ID, identity.RequestMeta{ClientIP: "127.0.0.1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(time.Minute)
+	second, err := m.CreateSession(ctx, user.ID, identity.RequestMeta{ClientIP: "127.0.0.2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessions, err := m.ListUserSessions(ctx, user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sessions) != 2 || sessions[0].ID != second.Session.ID || sessions[1].ID != first.Session.ID {
+		t.Fatalf("sessions = %#v", sessions)
+	}
+	if err := m.RevokeSessionByID(ctx, first.Session.ID, "operator"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.ResolveSession(ctx, first.Token, identity.RequestMeta{ClientIP: "127.0.0.1"}); !errors.Is(err, identity.ErrRevoked) {
+		t.Fatalf("revoked session error = %v", err)
+	}
+	now = second.Session.ExpiresAt
+	deleted, err := m.DeleteExpiredSessions(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deleted != 2 {
+		t.Fatalf("deleted expired sessions = %d, want 2", deleted)
+	}
+}
+
+type testLoginGuard struct {
+	allowErr error
+	allowed  int
+	records  []bool
+}
+
+func (g *testLoginGuard) Allow(context.Context, string, identity.RequestMeta) error {
+	g.allowed++
+	return g.allowErr
+}
+
+func (g *testLoginGuard) Record(_ context.Context, _ string, _ identity.RequestMeta, success bool) {
+	g.records = append(g.records, success)
+}
+
+func TestLoginGuardRecordsCredentialOutcomes(t *testing.T) {
+	_, db := testModule(t)
+	guard := &testLoginGuard{}
+	m, err := identity.New(identity.Options{
+		DB:         db,
+		LoginGuard: guard,
+		Password:   identity.PasswordOptions{Policy: identity.PasswordPolicy{MinLength: 8}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if _, err := m.RegisterUser(ctx, identity.UserCreateInput{Username: "guard-user"}, "correct horse"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := m.Login(ctx, "guard-user", "wrong horse", identity.RequestMeta{}); !errors.Is(err, identity.ErrUnauthenticated) {
+		t.Fatalf("failed login error = %v", err)
+	}
+	if _, _, err := m.Login(ctx, "guard-user", "correct horse", identity.RequestMeta{}); err != nil {
+		t.Fatal(err)
+	}
+	if guard.allowed != 2 || len(guard.records) != 2 || guard.records[0] || !guard.records[1] {
+		t.Fatalf("guard allowed=%d records=%v", guard.allowed, guard.records)
+	}
+}
+
+func TestLoginGuardDenialSkipsOutcomeRecord(t *testing.T) {
+	_, db := testModule(t)
+	guard := &testLoginGuard{allowErr: identity.ErrRateLimited}
+	m, err := identity.New(identity.Options{
+		DB:         db,
+		LoginGuard: guard,
+		Password:   identity.PasswordOptions{Policy: identity.PasswordPolicy{MinLength: 8}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := m.Login(context.Background(), "guard-user", "correct horse", identity.RequestMeta{}); !errors.Is(err, identity.ErrRateLimited) {
+		t.Fatalf("guard denial error = %v", err)
+	}
+	if guard.allowed != 1 || len(guard.records) != 0 {
+		t.Fatalf("guard allowed=%d records=%v", guard.allowed, guard.records)
+	}
+}
+
+func TestEventsAreCommittedFactsAndObserverPanicsAreIsolated(t *testing.T) {
+	_, db := testModule(t)
+	var events []identity.Event
+	m, err := identity.New(identity.Options{
+		DB:       db,
+		Password: identity.PasswordOptions{Policy: identity.PasswordPolicy{MinLength: 8}},
+		Events: identity.EventSinkFunc(func(_ context.Context, event identity.Event) {
+			events = append(events, event)
+			if event.Type == identity.EventLoginSucceeded {
+				panic("telemetry unavailable")
+			}
+		}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	user, err := m.RegisterUser(ctx, identity.UserCreateInput{Username: "event-user"}, "correct horse")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := m.Login(ctx, user.Username, "wrong horse", identity.RequestMeta{}); !errors.Is(err, identity.ErrUnauthenticated) {
+		t.Fatalf("failed login error = %v", err)
+	}
+	_, issued, err := m.Login(ctx, user.Username, "correct horse", identity.RequestMeta{})
+	if err != nil {
+		t.Fatalf("successful login after observer panic = %v", err)
+	}
+	if _, err := m.ResolveSession(ctx, issued.Token, identity.RequestMeta{}); err != nil {
+		t.Fatalf("committed session after observer panic = %v", err)
+	}
+	got := make([]identity.EventType, len(events))
+	for i := range events {
+		got[i] = events[i].Type
+	}
+	want := []identity.EventType{
+		identity.EventUserCreated,
+		identity.EventLoginFailed,
+		identity.EventSessionCreated,
+		identity.EventLoginSucceeded,
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("events = %v, want %v", got, want)
+	}
+}
+
 func TestAdminAuthorizerAndResetPolicy(t *testing.T) {
 	_, db := testModule(t)
 	var actions []string
@@ -541,7 +811,7 @@ func TestAdminAuthorizerAndResetPolicy(t *testing.T) {
 	}
 
 	body := `{"newPassword":"target-password"}`
-	reset := httptest.NewRequest(http.MethodPost, "/admin/users/"+string(target.ID)+"/password/reset", strings.NewReader(body))
+	reset := httptest.NewRequest(http.MethodPost, "/admin/users/"+target.ID.String()+"/password/reset", strings.NewReader(body))
 	reset.Header.Set("Authorization", "Bearer "+issued.Token)
 	reset.Header.Set("Content-Type", "application/json")
 	resetRes := httptest.NewRecorder()

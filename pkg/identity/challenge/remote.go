@@ -3,6 +3,7 @@ package challenge
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -19,6 +20,11 @@ type RemoteTokenOptions struct {
 	Secret    string
 	VerifyURL string
 	Client    *http.Client
+	// AllowedHostnames and ExpectedAction are optional provider response
+	// assertions supported by hCaptcha/Turnstile-compatible endpoints.
+	AllowedHostnames []string
+	ExpectedAction   string
+	MaxResponseBytes int64
 }
 
 // RemoteTokenProvider verifies hCaptcha, Turnstile, or another compatible
@@ -29,6 +35,9 @@ type RemoteTokenProvider struct {
 	secret    string
 	verifyURL string
 	client    *http.Client
+	allowed   map[string]struct{}
+	action    string
+	maxBytes  int64
 }
 
 // NewRemoteTokenProvider constructs a remote token provider. Provider, site
@@ -45,12 +54,25 @@ func NewRemoteTokenProvider(options RemoteTokenOptions) (*RemoteTokenProvider, e
 	if client == nil {
 		client = &http.Client{Timeout: 5 * time.Second}
 	}
+	allowed := make(map[string]struct{}, len(options.AllowedHostnames))
+	for _, hostname := range options.AllowedHostnames {
+		if hostname = normalizeHostname(hostname); hostname != "" {
+			allowed[hostname] = struct{}{}
+		}
+	}
+	maxBytes := options.MaxResponseBytes
+	if maxBytes <= 0 {
+		maxBytes = 64 * 1024
+	}
 	return &RemoteTokenProvider{
 		provider:  provider,
 		siteKey:   siteKey,
 		secret:    secret,
 		verifyURL: verifyURL,
 		client:    client,
+		allowed:   allowed,
+		action:    strings.TrimSpace(options.ExpectedAction),
+		maxBytes:  maxBytes,
 	}, nil
 }
 
@@ -66,10 +88,6 @@ func (p *RemoteTokenProvider) PublicConfig() domain.HumanChallengeConfig {
 		return domain.HumanChallengeConfig{}
 	}
 	return domain.HumanChallengeConfig{Provider: p.provider, SiteKey: p.siteKey}
-}
-
-func (p *RemoteTokenProvider) Create(context.Context, domain.RequestMeta) (*domain.HumanChallenge, error) {
-	return nil, domain.ErrHumanChallengeUnsupported
 }
 
 func (p *RemoteTokenProvider) Verify(ctx context.Context, response domain.HumanChallengeResponse, request domain.RequestMeta) error {
@@ -95,14 +113,35 @@ func (p *RemoteTokenProvider) Verify(ctx context.Context, response domain.HumanC
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		return domain.ErrHumanChallengeInvalid
 	}
-	var body struct {
-		Success bool `json:"success"`
+	data, err := io.ReadAll(io.LimitReader(resp.Body, p.maxBytes+1))
+	if err != nil {
+		return err
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+	if int64(len(data)) > p.maxBytes {
+		return domain.ErrHumanChallengeInvalid
+	}
+	var body struct {
+		Success  bool   `json:"success"`
+		Hostname string `json:"hostname"`
+		Action   string `json:"action"`
+	}
+	if err := json.Unmarshal(data, &body); err != nil {
 		return err
 	}
 	if !body.Success {
 		return domain.ErrHumanChallengeInvalid
 	}
+	if len(p.allowed) > 0 {
+		if _, ok := p.allowed[normalizeHostname(body.Hostname)]; !ok {
+			return domain.ErrHumanChallengeInvalid
+		}
+	}
+	if p.action != "" && strings.TrimSpace(body.Action) != p.action {
+		return domain.ErrHumanChallengeInvalid
+	}
 	return nil
+}
+
+func normalizeHostname(value string) string {
+	return strings.TrimSuffix(strings.ToLower(strings.TrimSpace(value)), ".")
 }

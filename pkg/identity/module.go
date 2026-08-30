@@ -21,7 +21,8 @@ type Module struct {
 	session           *service.SessionService
 	authorization     *service.AuthorizationService
 	account           *service.AccountService
-	challenge         HumanChallengeProvider
+	challenge         HumanChallengeVerifier
+	challengeCreator  HumanChallengeCreator
 	challengeRequired bool
 	handler           *handler.Endpoint
 }
@@ -46,11 +47,17 @@ func New(options Options) (*Module, error) {
 	if err != nil {
 		return nil, err
 	}
-	users.SetBeforeDeleteHook(options.BeforeDeleteUsers)
+	users.SetEventSink(options.Events)
+	if options.DeleteParticipant != nil {
+		users.SetDeleteParticipant(func(ctx context.Context, db bun.IDB, users []domain.User) error {
+			return options.DeleteParticipant(ctx, db, users)
+		})
+	}
 	authorization, err := service.NewAuthorizationService(store, store, store, now, options.Authorization.DefaultRoleCodes)
 	if err != nil {
 		return nil, err
 	}
+	authorization.SetEventSink(options.Events)
 	claims := func(ctx context.Context, user *domain.User) (domain.Claims, error) {
 		builtIn, err := authorization.Claims(ctx, user)
 		if err != nil {
@@ -99,10 +106,13 @@ func New(options Options) (*Module, error) {
 	if err != nil {
 		return nil, err
 	}
+	session.SetEventSink(options.Events)
 	account, err := service.NewAccountService(users, password, session, authorization, store)
 	if err != nil {
 		return nil, err
 	}
+	account.SetLoginGuard(options.LoginGuard)
+	account.SetEventSink(options.Events)
 	authorizer := func(ctx context.Context, principal *domain.Principal, action string) error {
 		if err := authorization.Authorize(ctx, principal, action); err != nil {
 			return err
@@ -111,6 +121,10 @@ func New(options Options) (*Module, error) {
 			return options.Authorizer(ctx, principal, action)
 		}
 		return nil
+	}
+	creator := options.HTTP.ChallengeCreator
+	if creator == nil {
+		creator, _ = options.HTTP.ChallengeProvider.(HumanChallengeCreator)
 	}
 	endpoint := handler.NewEndpoint(handler.Config{
 		AuthPrefix:          options.HTTP.AuthPrefix,
@@ -125,11 +139,12 @@ func New(options Options) (*Module, error) {
 		SameSite:            options.HTTP.SameSite,
 		TokenExtractor:      options.HTTP.TokenExtractor,
 		RequestMetaResolver: options.HTTP.RequestMetaResolver,
-		ChallengeProvider:   options.HTTP.ChallengeProvider,
+		ChallengeVerifier:   options.HTTP.ChallengeProvider,
+		ChallengeCreator:    creator,
 		RequireChallenge:    options.HTTP.RequireChallenge,
 		Authorizer:          authorizer,
 	}, handler.Services{Users: users, Passwords: password, Sessions: session, Accounts: account, Authorization: authorization})
-	return &Module{users: users, password: password, session: session, authorization: authorization, account: account, challenge: options.HTTP.ChallengeProvider, challengeRequired: options.HTTP.RequireChallenge, handler: endpoint}, nil
+	return &Module{users: users, password: password, session: session, authorization: authorization, account: account, challenge: options.HTTP.ChallengeProvider, challengeCreator: creator, challengeRequired: options.HTTP.RequireChallenge, handler: endpoint}, nil
 }
 
 func MustNew(options Options) *Module {
@@ -167,12 +182,6 @@ func (m *Module) MarkUserLogin(ctx context.Context, id UserID) error {
 	return m.users.MarkLogin(ctx, id)
 }
 
-// SetPassword provisions or replaces a user's password and revokes existing
-// sessions. It is useful for host-owned administrative account creation where
-// the user row and credential are assembled as separate operations.
-func (m *Module) SetPassword(ctx context.Context, userID UserID, password string) error {
-	return m.account.ResetPassword(ctx, userID, password)
-}
 func (m *Module) ListUsers(ctx context.Context, filter UserFilter) ([]User, int, error) {
 	return m.users.Users(ctx, filter)
 }
@@ -200,9 +209,6 @@ func (m *Module) CreateSession(ctx context.Context, userID UserID, meta RequestM
 func (m *Module) ResolveSession(ctx context.Context, token string, meta RequestMeta) (*Principal, error) {
 	return m.session.Resolve(ctx, token, meta)
 }
-func (m *Module) CurrentPrincipal(ctx context.Context, token string, meta RequestMeta) (*Principal, error) {
-	return m.ResolveSession(ctx, token, meta)
-}
 func (m *Module) CurrentUser(ctx context.Context, token string, meta RequestMeta) (*User, error) {
 	p, err := m.ResolveSession(ctx, token, meta)
 	if err != nil {
@@ -212,6 +218,15 @@ func (m *Module) CurrentUser(ctx context.Context, token string, meta RequestMeta
 }
 func (m *Module) RevokeSession(ctx context.Context, token, reason string, meta RequestMeta) error {
 	return m.session.Revoke(ctx, token, reason, meta)
+}
+func (m *Module) ListUserSessions(ctx context.Context, userID UserID) ([]Session, error) {
+	return m.session.ListForUser(ctx, userID)
+}
+func (m *Module) RevokeSessionByID(ctx context.Context, sessionID SessionID, reason string) error {
+	return m.session.RevokeByID(ctx, sessionID, reason)
+}
+func (m *Module) DeleteExpiredSessions(ctx context.Context) (int64, error) {
+	return m.session.DeleteExpired(ctx)
 }
 func (m *Module) ChangePassword(ctx context.Context, userID UserID, current, next string) error {
 	return m.account.ChangePassword(ctx, userID, current, next)
@@ -229,10 +244,10 @@ func (m *Module) ChallengeConfig() HumanChallengeConfig {
 
 // CreateChallenge creates a provider-specific challenge for a client.
 func (m *Module) CreateChallenge(ctx context.Context, meta RequestMeta) (*HumanChallenge, error) {
-	if m == nil || m.challenge == nil {
+	if m == nil || m.challengeCreator == nil {
 		return nil, ErrHumanChallengeUnsupported
 	}
-	return m.challenge.Create(ctx, meta)
+	return m.challengeCreator.Create(ctx, meta)
 }
 
 // VerifyChallenge validates a provider response. Hosts can use this for
@@ -405,4 +420,8 @@ func DatabaseSchema() Schema {
 }
 func ApplySchema(ctx context.Context, db bun.IDB) error {
 	return DatabaseSchema().Apply(ctx, db)
+}
+
+func ValidateSchema(ctx context.Context, db *bun.DB) error {
+	return repository.ValidateSchema(ctx, db)
 }

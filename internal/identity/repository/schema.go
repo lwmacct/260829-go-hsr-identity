@@ -5,11 +5,25 @@ import (
 	"fmt"
 
 	"github.com/uptrace/bun"
+	"github.com/uptrace/bun/dialect"
 )
 
 type Schema struct {
 	Models []any
 	Tables []string
+}
+
+var requiredSchema = []struct {
+	table   string
+	columns []string
+}{
+	{"identity_users", []string{"id", "username", "username_key", "display_name", "email", "avatar_url", "state", "disabled_at", "last_login_at", "created_at", "updated_at"}},
+	{"identity_passwords", []string{"user_id", "scheme", "hash", "password_changed_at", "created_at", "updated_at"}},
+	{"identity_sessions", []string{"id", "token_hash", "user_id", "login_ip", "last_ip", "binding_hash", "expires_at", "created_at", "last_seen_at", "revoked_at", "revoked_reason"}},
+	{"identity_roles", []string{"id", "code", "name", "description", "system", "created_at", "updated_at"}},
+	{"identity_permissions", []string{"id", "code", "name", "description", "system", "created_at", "updated_at"}},
+	{"identity_user_roles", []string{"user_id", "role_id", "created_at"}},
+	{"identity_role_permissions", []string{"role_id", "permission_id", "created_at"}},
 }
 
 func DatabaseSchema() Schema {
@@ -65,4 +79,36 @@ func (s Schema) Apply(ctx context.Context, db bun.IDB) error {
 		}
 	}
 	return nil
+}
+
+func ValidateSchema(ctx context.Context, db *bun.DB) error {
+	if db == nil {
+		return fmt.Errorf("identity schema: database is required")
+	}
+	for _, required := range requiredSchema {
+		for _, column := range required.columns {
+			exists, err := schemaColumnExists(ctx, db, required.table, column)
+			if err != nil {
+				return fmt.Errorf("inspect identity schema %s.%s: %w", required.table, column, err)
+			}
+			if !exists {
+				return fmt.Errorf("identity schema is incomplete: missing %s.%s", required.table, column)
+			}
+		}
+	}
+	return nil
+}
+
+func schemaColumnExists(ctx context.Context, db *bun.DB, table, column string) (bool, error) {
+	var count int
+	switch db.Dialect().Name() {
+	case dialect.SQLite:
+		err := db.NewRaw("SELECT COUNT(*) FROM pragma_table_info(?) WHERE name = ?", table, column).Scan(ctx, &count)
+		return count > 0, err
+	case dialect.PG:
+		err := db.NewRaw("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = ? AND column_name = ?", table, column).Scan(ctx, &count)
+		return count > 0, err
+	default:
+		return false, fmt.Errorf("unsupported database dialect %s", db.Dialect().Name())
+	}
 }

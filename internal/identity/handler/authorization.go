@@ -164,7 +164,11 @@ func (e *Endpoint) updateRole(ctx context.Context, input *roleInput) (*roleRespo
 	if err := e.authorize(ctx, domain.ActionRoleUpdate); err != nil {
 		return nil, mapError(err, false)
 	}
-	role, err := e.services.Authorization.UpdateRole(ctx, domain.RoleID(input.RoleID), domain.RoleInput{Code: input.Body.Code, Name: input.Body.Name, Description: input.Body.Description})
+	id, err := parseUUID7(input.RoleID)
+	if err != nil {
+		return nil, mapError(err, false)
+	}
+	role, err := e.services.Authorization.UpdateRole(ctx, id, domain.RoleInput{Code: input.Body.Code, Name: input.Body.Name, Description: input.Body.Description})
 	if err != nil {
 		return nil, mapError(err, false)
 	}
@@ -175,7 +179,11 @@ func (e *Endpoint) deleteRole(ctx context.Context, input *rolePathInput) (*struc
 	if err := e.authorize(ctx, domain.ActionRoleDelete); err != nil {
 		return nil, mapError(err, false)
 	}
-	if err := e.services.Authorization.DeleteRole(ctx, domain.RoleID(input.RoleID)); err != nil {
+	id, err := parseUUID7(input.RoleID)
+	if err != nil {
+		return nil, mapError(err, false)
+	}
+	if err := e.services.Authorization.DeleteRole(ctx, id); err != nil {
 		return nil, mapError(err, false)
 	}
 	return &struct{}{}, nil
@@ -212,7 +220,11 @@ func (e *Endpoint) updatePermission(ctx context.Context, input *permissionInput)
 	if err := e.authorize(ctx, domain.ActionPermissionUpdate); err != nil {
 		return nil, mapError(err, false)
 	}
-	permission, err := e.services.Authorization.UpdatePermission(ctx, domain.PermissionID(input.PermissionID), domain.PermissionInput{Code: input.Body.Code, Name: input.Body.Name, Description: input.Body.Description})
+	id, err := parseUUID7(input.PermissionID)
+	if err != nil {
+		return nil, mapError(err, false)
+	}
+	permission, err := e.services.Authorization.UpdatePermission(ctx, id, domain.PermissionInput{Code: input.Body.Code, Name: input.Body.Name, Description: input.Body.Description})
 	if err != nil {
 		return nil, mapError(err, false)
 	}
@@ -223,7 +235,11 @@ func (e *Endpoint) deletePermission(ctx context.Context, input *permissionPathIn
 	if err := e.authorize(ctx, domain.ActionPermissionDelete); err != nil {
 		return nil, mapError(err, false)
 	}
-	if err := e.services.Authorization.DeletePermission(ctx, domain.PermissionID(input.PermissionID)); err != nil {
+	id, err := parseUUID7(input.PermissionID)
+	if err != nil {
+		return nil, mapError(err, false)
+	}
+	if err := e.services.Authorization.DeletePermission(ctx, id); err != nil {
 		return nil, mapError(err, false)
 	}
 	return &struct{}{}, nil
@@ -233,7 +249,11 @@ func (e *Endpoint) listUserRoles(ctx context.Context, input *roleAssignmentInput
 	if err := e.authorize(ctx, domain.ActionUserRoleManage); err != nil {
 		return nil, mapError(err, false)
 	}
-	roles, err := e.services.Authorization.UserRoles(ctx, domain.UserID(input.UserID))
+	id, err := parseUUID7(input.UserID)
+	if err != nil {
+		return nil, mapError(err, false)
+	}
+	roles, err := e.services.Authorization.UserRoles(ctx, id)
 	if err != nil {
 		return nil, mapError(err, false)
 	}
@@ -249,7 +269,11 @@ func (e *Endpoint) setUserRoles(ctx context.Context, input *userRolesInput) (*st
 	if err := e.authorize(ctx, domain.ActionUserRoleManage); err != nil {
 		return nil, mapError(err, false)
 	}
-	if err := e.services.Authorization.SetUserRoles(ctx, domain.UserID(input.UserID), input.Body.RoleCodes); err != nil {
+	id, err := parseUUID7(input.UserID)
+	if err != nil {
+		return nil, mapError(err, false)
+	}
+	if err := e.services.Authorization.SetUserRoles(ctx, id, input.Body.RoleCodes); err != nil {
 		return nil, mapError(err, false)
 	}
 	return &struct{ Body operationView }{Body: operationView{OK: true}}, nil
@@ -259,7 +283,11 @@ func (e *Endpoint) listRolePermissions(ctx context.Context, input *rolePermissio
 	if err := e.authorize(ctx, domain.ActionRolePermissionManage); err != nil {
 		return nil, mapError(err, false)
 	}
-	permissions, err := e.services.Authorization.RolePermissions(ctx, domain.RoleID(input.RoleID))
+	id, err := parseUUID7(input.RoleID)
+	if err != nil {
+		return nil, mapError(err, false)
+	}
+	permissions, err := e.services.Authorization.RolePermissions(ctx, id)
 	if err != nil {
 		return nil, mapError(err, false)
 	}
@@ -275,7 +303,11 @@ func (e *Endpoint) setRolePermissions(ctx context.Context, input *rolePermission
 	if err := e.authorize(ctx, domain.ActionRolePermissionManage); err != nil {
 		return nil, mapError(err, false)
 	}
-	if err := e.services.Authorization.SetRolePermissions(ctx, domain.RoleID(input.RoleID), input.Body.PermissionCodes); err != nil {
+	id, err := parseUUID7(input.RoleID)
+	if err != nil {
+		return nil, mapError(err, false)
+	}
+	if err := e.services.Authorization.SetRolePermissions(ctx, id, input.Body.PermissionCodes); err != nil {
 		return nil, mapError(err, false)
 	}
 	return &struct{ Body operationView }{Body: operationView{OK: true}}, nil
@@ -285,12 +317,12 @@ func roleViewFrom(role *domain.Role) roleView {
 	if role == nil {
 		return roleView{}
 	}
-	return roleView{ID: string(role.ID), Code: role.Code, Name: role.Name, Description: role.Description, System: role.System, CreatedAt: role.CreatedAt, UpdatedAt: role.UpdatedAt}
+	return roleView{ID: role.ID.String(), Code: role.Code, Name: role.Name, Description: role.Description, System: role.System, CreatedAt: role.CreatedAt, UpdatedAt: role.UpdatedAt}
 }
 
 func permissionViewFrom(permission *domain.Permission) permissionView {
 	if permission == nil {
 		return permissionView{}
 	}
-	return permissionView{ID: string(permission.ID), Code: permission.Code, Name: permission.Name, Description: permission.Description, System: permission.System, CreatedAt: permission.CreatedAt, UpdatedAt: permission.UpdatedAt}
+	return permissionView{ID: permission.ID.String(), Code: permission.Code, Name: permission.Name, Description: permission.Description, System: permission.System, CreatedAt: permission.CreatedAt, UpdatedAt: permission.UpdatedAt}
 }

@@ -14,7 +14,10 @@ func (nilSessionRepository) CreateSession(context.Context, domain.SessionRecord)
 func (nilSessionRepository) GetSessionByTokenHash(context.Context, []byte) (*domain.SessionRecord, error) {
 	return nil, nil
 }
-func (nilSessionRepository) TouchSession(context.Context, domain.SessionID, string, time.Time) error {
+func (nilSessionRepository) ListSessionsForUser(context.Context, domain.UserID) ([]domain.SessionRecord, error) {
+	return nil, nil
+}
+func (nilSessionRepository) TouchSession(context.Context, domain.SessionID, string, time.Time, time.Time) error {
 	return nil
 }
 func (nilSessionRepository) RevokeSession(context.Context, domain.SessionID, string, string, time.Time) error {
@@ -26,6 +29,9 @@ func (nilSessionRepository) RevokeSessionsForUsers(context.Context, []domain.Use
 }
 func (nilSessionRepository) DeleteSessionsForUsers(context.Context, []domain.UserID) error {
 	return nil
+}
+func (nilSessionRepository) DeleteExpiredSessions(context.Context, time.Time) (int64, error) {
+	return 0, nil
 }
 
 func TestSessionResolveTreatsNilRecordAsUnauthenticated(t *testing.T) {

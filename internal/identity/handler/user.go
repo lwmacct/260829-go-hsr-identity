@@ -115,7 +115,11 @@ func (e *Endpoint) adminGet(ctx context.Context, input *userPathInput) (*userRes
 	if err := e.authorize(ctx, domain.ActionUserRead); err != nil {
 		return nil, mapError(err, false)
 	}
-	u, err := e.services.Users.UserByID(ctx, domain.UserID(input.UserID))
+	id, err := parseUUID7(input.UserID)
+	if err != nil {
+		return nil, mapError(err, false)
+	}
+	u, err := e.services.Users.UserByID(ctx, id)
 	if err != nil {
 		return nil, mapError(err, false)
 	}
@@ -125,7 +129,11 @@ func (e *Endpoint) adminUpdate(ctx context.Context, input *userProfileInput) (*u
 	if err := e.authorize(ctx, domain.ActionUserUpdate); err != nil {
 		return nil, mapError(err, false)
 	}
-	u, err := e.services.Users.UpdateProfile(ctx, domain.UserID(input.UserID), domain.UserUpdateProfileInput{DisplayName: input.Body.DisplayName, Email: input.Body.Email, AvatarURL: input.Body.AvatarURL})
+	id, err := parseUUID7(input.UserID)
+	if err != nil {
+		return nil, mapError(err, false)
+	}
+	u, err := e.services.Users.UpdateProfile(ctx, id, domain.UserUpdateProfileInput{DisplayName: input.Body.DisplayName, Email: input.Body.Email, AvatarURL: input.Body.AvatarURL})
 	if err != nil {
 		return nil, mapError(err, false)
 	}
@@ -135,10 +143,14 @@ func (e *Endpoint) adminState(ctx context.Context, input *userStateInput) (*user
 	if err := e.authorize(ctx, domain.ActionUserUpdate); err != nil {
 		return nil, mapError(err, false)
 	}
-	if err := e.services.Users.SetState(ctx, []domain.UserID{domain.UserID(input.UserID)}, domain.State(input.Body.State)); err != nil {
+	id, err := parseUUID7(input.UserID)
+	if err != nil {
 		return nil, mapError(err, false)
 	}
-	u, err := e.services.Users.UserByID(ctx, domain.UserID(input.UserID))
+	if err := e.services.Users.SetState(ctx, []domain.UserID{id}, domain.State(input.Body.State)); err != nil {
+		return nil, mapError(err, false)
+	}
+	u, err := e.services.Users.UserByID(ctx, id)
 	if err != nil {
 		return nil, mapError(err, false)
 	}
@@ -148,7 +160,11 @@ func (e *Endpoint) adminResetPassword(ctx context.Context, input *resetPasswordI
 	if err := e.authorize(ctx, domain.ActionUserResetPassword); err != nil {
 		return nil, mapError(err, false)
 	}
-	if err := e.services.Accounts.ResetPassword(ctx, domain.UserID(input.UserID), input.Body.NewPassword); err != nil {
+	id, err := parseUUID7(input.UserID)
+	if err != nil {
+		return nil, mapError(err, false)
+	}
+	if err := e.services.Accounts.ResetPassword(ctx, id, input.Body.NewPassword); err != nil {
 		return nil, mapError(err, false)
 	}
 	return &basicResponse{Body: operationView{OK: true}}, nil
@@ -157,7 +173,11 @@ func (e *Endpoint) adminDelete(ctx context.Context, input *userPathInput) (*noCo
 	if err := e.authorize(ctx, domain.ActionUserDelete); err != nil {
 		return nil, mapError(err, false)
 	}
-	if err := e.services.Users.DeleteUsers(ctx, []domain.UserID{domain.UserID(input.UserID)}); err != nil {
+	id, err := parseUUID7(input.UserID)
+	if err != nil {
+		return nil, mapError(err, false)
+	}
+	if err := e.services.Users.DeleteUsers(ctx, []domain.UserID{id}); err != nil {
 		return nil, mapError(err, false)
 	}
 	return &noContent{}, nil
@@ -167,13 +187,13 @@ func userViewFrom(u *domain.User) userView {
 	if u == nil {
 		return userView{}
 	}
-	return userView{ID: string(u.ID), Username: u.Username, DisplayName: u.DisplayName, Email: u.Email, AvatarURL: u.AvatarURL, State: string(u.State), DisabledAt: u.DisabledAt, LastLoginAt: u.LastLoginAt, CreatedAt: u.CreatedAt, UpdatedAt: u.UpdatedAt}
+	return userView{ID: u.ID.String(), Username: u.Username, DisplayName: u.DisplayName, Email: u.Email, AvatarURL: u.AvatarURL, State: string(u.State), DisabledAt: u.DisabledAt, LastLoginAt: u.LastLoginAt, CreatedAt: u.CreatedAt, UpdatedAt: u.UpdatedAt}
 }
 func sessionViewFromPrincipal(p *domain.Principal) sessionView {
 	if p == nil {
 		return sessionView{}
 	}
-	return sessionView{Authenticated: true, User: userViewFrom(p.User), Roles: append([]string(nil), p.Claims.Roles...), Permissions: append([]string(nil), p.Claims.Permissions...), SessionID: string(p.SessionID), AuthenticatedAt: p.AuthenticatedAt, ExpiresAt: p.ExpiresAt}
+	return sessionView{Authenticated: true, User: userViewFrom(p.User), Roles: append([]string(nil), p.Claims.Roles...), Permissions: append([]string(nil), p.Claims.Permissions...), SessionID: p.SessionID.String(), AuthenticatedAt: p.AuthenticatedAt, ExpiresAt: p.ExpiresAt}
 }
 func normalizePage(page, size int) (int, int) {
 	if page < 1 {

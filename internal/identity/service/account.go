@@ -16,6 +16,20 @@ type AccountService struct {
 	sessions      *SessionService
 	authorization *AuthorizationService
 	tx            domain.TxManager
+	loginGuard    domain.LoginGuard
+	events        domain.EventSink
+}
+
+func (s *AccountService) SetLoginGuard(guard domain.LoginGuard) {
+	if s != nil {
+		s.loginGuard = guard
+	}
+}
+
+func (s *AccountService) SetEventSink(sink domain.EventSink) {
+	if s != nil {
+		s.events = sink
+	}
 }
 
 func NewAccountService(users *UserService, passwords *PasswordService, sessions *SessionService, authorization *AuthorizationService, tx domain.TxManager) (*AccountService, error) {
@@ -51,6 +65,9 @@ func (s *AccountService) Register(ctx context.Context, in UserCreateInput, passw
 		}
 		return pw.SetHash(c, u.ID, hash)
 	})
+	if e == nil {
+		emitEvent(ctx, s.events, domain.Event{Type: domain.EventUserCreated, At: u.CreatedAt, UserID: u.ID, Username: u.Username})
+	}
 	return u, e
 }
 
@@ -110,6 +127,8 @@ func (s *AccountService) BootstrapUser(ctx context.Context, in domain.BootstrapI
 	if err != nil {
 		return nil, err
 	}
+	emitEvent(ctx, s.events, domain.Event{Type: domain.EventUserCreated, At: user.CreatedAt, UserID: user.ID, Username: user.Username})
+	emitEvent(ctx, s.events, domain.Event{Type: domain.EventBootstrapCompleted, At: user.CreatedAt, UserID: user.ID, Username: user.Username})
 	return user, nil
 }
 
@@ -160,6 +179,8 @@ func (s *AccountService) RegisterAndLogin(ctx context.Context, in UserCreateInpu
 	if e != nil {
 		return nil, nil, e
 	}
+	emitEvent(ctx, s.events, domain.Event{Type: domain.EventUserCreated, At: user.CreatedAt, UserID: user.ID, Username: user.Username})
+	emitEvent(ctx, s.events, domain.Event{Type: domain.EventSessionCreated, At: issued.Session.CreatedAt, UserID: user.ID, SessionID: issued.Session.ID, RequestMeta: meta})
 	return user, issued, nil
 }
 
@@ -167,6 +188,12 @@ func (s *AccountService) RegisterAndLogin(ctx context.Context, in UserCreateInpu
 // one transaction. Callers that only need credential verification should use
 // PasswordService.Authenticate through Module.Authenticate.
 func (s *AccountService) Login(ctx context.Context, username, password string, meta domain.RequestMeta) (*domain.User, *domain.IssuedSession, error) {
+	if s.loginGuard != nil {
+		if err := s.loginGuard.Allow(ctx, username, meta); err != nil {
+			emitEvent(ctx, s.events, domain.Event{Type: domain.EventLoginFailed, At: s.passwords.Now(), Username: username, RequestMeta: meta})
+			return nil, nil, err
+		}
+	}
 	var user *domain.User
 	var issued *domain.IssuedSession
 	err := s.tx.WithinTx(ctx, func(c context.Context, uow domain.UnitOfWork) error {
@@ -196,8 +223,17 @@ func (s *AccountService) Login(ctx context.Context, username, password string, m
 		return nil
 	})
 	if err != nil {
+		if s.loginGuard != nil {
+			s.loginGuard.Record(ctx, username, meta, false)
+		}
+		emitEvent(ctx, s.events, domain.Event{Type: domain.EventLoginFailed, At: s.passwords.Now(), Username: username, RequestMeta: meta})
 		return nil, nil, err
 	}
+	if s.loginGuard != nil {
+		s.loginGuard.Record(ctx, username, meta, true)
+	}
+	emitEvent(ctx, s.events, domain.Event{Type: domain.EventSessionCreated, At: issued.Session.CreatedAt, UserID: user.ID, SessionID: issued.Session.ID, RequestMeta: meta})
+	emitEvent(ctx, s.events, domain.Event{Type: domain.EventLoginSucceeded, At: issued.Session.CreatedAt, UserID: user.ID, SessionID: issued.Session.ID, Username: user.Username, RequestMeta: meta})
 	return user, issued, nil
 }
 
@@ -231,11 +267,12 @@ func (s *AccountService) IssueSession(ctx context.Context, id domain.UserID, met
 	if err != nil {
 		return nil, err
 	}
+	emitEvent(ctx, s.events, domain.Event{Type: domain.EventSessionCreated, At: issued.Session.CreatedAt, UserID: id, SessionID: issued.Session.ID, RequestMeta: meta})
 	return issued, nil
 }
 
 func (s *AccountService) ChangePassword(ctx context.Context, id domain.UserID, current, next string) error {
-	return s.tx.WithinTx(ctx, func(c context.Context, u domain.UnitOfWork) error {
+	err := s.tx.WithinTx(ctx, func(c context.Context, u domain.UnitOfWork) error {
 		users, err := s.userService(u)
 		if err != nil {
 			return err
@@ -266,10 +303,15 @@ func (s *AccountService) ChangePassword(ctx context.Context, id domain.UserID, c
 		}
 		return u.Sessions().RevokeSessionsForUsers(c, []domain.UserID{id}, "password_changed", s.passwords.Now())
 	})
+	if err == nil {
+		emitEvent(ctx, s.events, domain.Event{Type: domain.EventPasswordChanged, At: s.passwords.Now(), UserID: id})
+		emitEvent(ctx, s.events, domain.Event{Type: domain.EventUserSessionsRevoked, At: s.passwords.Now(), UserID: id, Attributes: map[string]string{"reason": "password_changed"}})
+	}
+	return err
 }
 
 func (s *AccountService) ResetPassword(ctx context.Context, id domain.UserID, next string) error {
-	return s.tx.WithinTx(ctx, func(c context.Context, u domain.UnitOfWork) error {
+	err := s.tx.WithinTx(ctx, func(c context.Context, u domain.UnitOfWork) error {
 		users, err := s.userService(u)
 		if err != nil {
 			return err
@@ -294,6 +336,11 @@ func (s *AccountService) ResetPassword(ctx context.Context, id domain.UserID, ne
 		}
 		return u.Sessions().RevokeSessionsForUsers(c, []domain.UserID{id}, "password_reset", s.passwords.Now())
 	})
+	if err == nil {
+		emitEvent(ctx, s.events, domain.Event{Type: domain.EventPasswordReset, At: s.passwords.Now(), UserID: id})
+		emitEvent(ctx, s.events, domain.Event{Type: domain.EventUserSessionsRevoked, At: s.passwords.Now(), UserID: id, Attributes: map[string]string{"reason": "password_reset"}})
+	}
+	return err
 }
 
 func (s *AccountService) userService(uow domain.UnitOfWork) (*UserService, error) {

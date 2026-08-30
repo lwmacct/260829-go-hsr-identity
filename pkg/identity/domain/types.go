@@ -7,13 +7,21 @@ import (
 	"net/netip"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 	"uuid"
+
+	"github.com/uptrace/bun"
+	"golang.org/x/text/cases"
+	"golang.org/x/text/unicode/norm"
 )
 
-type UserID string
-type SessionID string
-type RoleID string
-type PermissionID string
+// IDs are UUID values, never opaque strings. All IDs created by identity are
+// UUIDv7; the validation helpers reject other UUID versions at the boundary.
+type UserID = uuid.UUID
+type SessionID = uuid.UUID
+type RoleID = uuid.UUID
+type PermissionID = uuid.UUID
 type State string
 
 const (
@@ -21,15 +29,11 @@ const (
 	StateDisabled State = "disabled"
 )
 
-// NormalizeUserID and NormalizeSessionID enforce canonical UUIDv7 text used by
-// the Bun schema and HTTP contract. IDs remain named strings at the domain
-// boundary so hosts can pass them through without conversion.
 func NormalizeUserID(id UserID) (UserID, error) {
-	parsed, ok := parseUUIDv7(string(id))
-	if !ok {
-		return "", ErrInvalidUser
+	if !isUUIDv7(id) {
+		return uuid.Nil(), ErrInvalidUser
 	}
-	return UserID(parsed.String()), nil
+	return id, nil
 }
 
 func ValidateUserID(id UserID) error {
@@ -37,17 +41,23 @@ func ValidateUserID(id UserID) error {
 	return err
 }
 
-func NormalizeSessionID(id SessionID) (SessionID, error) {
-	parsed, ok := parseUUIDv7(string(id))
-	if !ok {
-		return "", ErrInvalid
+func ParseUserID(raw string) (UserID, error) {
+	id, err := uuid.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return uuid.Nil(), ErrInvalidUser
 	}
-	return SessionID(parsed.String()), nil
+	return NormalizeUserID(id)
 }
 
-func parseUUIDv7(raw string) (uuid.UUID, bool) {
-	parsed, err := uuid.Parse(strings.TrimSpace(raw))
-	return parsed, err == nil && parsed != uuid.Nil() && parsed[6]>>4 == 7
+func NormalizeSessionID(id SessionID) (SessionID, error) {
+	if !isUUIDv7(id) {
+		return uuid.Nil(), ErrInvalid
+	}
+	return id, nil
+}
+
+func isUUIDv7(id uuid.UUID) bool {
+	return id != uuid.Nil() && id[6]>>4 == 7
 }
 
 func ValidateSessionID(id SessionID) error {
@@ -55,20 +65,26 @@ func ValidateSessionID(id SessionID) error {
 	return err
 }
 
-func NormalizeRoleID(id RoleID) (RoleID, error) {
-	parsed, ok := parseUUIDv7(string(id))
-	if !ok {
-		return "", ErrInvalid
+func ParseSessionID(raw string) (SessionID, error) {
+	id, err := uuid.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return uuid.Nil(), ErrInvalid
 	}
-	return RoleID(parsed.String()), nil
+	return NormalizeSessionID(id)
+}
+
+func NormalizeRoleID(id RoleID) (RoleID, error) {
+	if !isUUIDv7(id) {
+		return uuid.Nil(), ErrInvalid
+	}
+	return id, nil
 }
 
 func NormalizePermissionID(id PermissionID) (PermissionID, error) {
-	parsed, ok := parseUUIDv7(string(id))
-	if !ok {
-		return "", ErrInvalid
+	if !isUUIDv7(id) {
+		return uuid.Nil(), ErrInvalid
 	}
-	return PermissionID(parsed.String()), nil
+	return id, nil
 }
 
 func ValidateRoleID(id RoleID) error {
@@ -117,7 +133,7 @@ type User struct {
 }
 
 func (u *User) Active() bool {
-	return u != nil && u.ID != "" && u.State == StateActive && u.DisabledAt == nil
+	return u != nil && u.ID != uuid.Nil() && u.State == StateActive && u.DisabledAt == nil
 }
 
 type Claims struct {
@@ -136,18 +152,77 @@ type Principal struct {
 }
 
 func (p *Principal) Active() bool {
-	return p != nil && p.Subject != "" && p.User != nil && p.User.Active()
+	return p != nil && p.User != nil && p.Subject == p.User.ID && p.User.Active()
 }
 
 type RequestMeta struct {
 	ClientIP  string
 	UserAgent string
-	DeviceID  string
+}
+
+type EventType string
+
+const (
+	EventUserCreated            EventType = "identity.user.created"
+	EventUserUpdated            EventType = "identity.user.updated"
+	EventUserStateChanged       EventType = "identity.user.state_changed"
+	EventUserDeleted            EventType = "identity.user.deleted"
+	EventBootstrapCompleted     EventType = "identity.bootstrap.completed"
+	EventLoginSucceeded         EventType = "identity.login.succeeded"
+	EventLoginFailed            EventType = "identity.login.failed"
+	EventPasswordChanged        EventType = "identity.password.changed"
+	EventPasswordReset          EventType = "identity.password.reset"
+	EventSessionCreated         EventType = "identity.session.created"
+	EventSessionRevoked         EventType = "identity.session.revoked"
+	EventUserSessionsRevoked    EventType = "identity.session.revoked_for_user"
+	EventExpiredSessionsDeleted EventType = "identity.session.expired_deleted"
+	EventRoleCreated            EventType = "identity.role.created"
+	EventRoleUpdated            EventType = "identity.role.updated"
+	EventRoleDeleted            EventType = "identity.role.deleted"
+	EventPermissionCreated      EventType = "identity.permission.created"
+	EventPermissionUpdated      EventType = "identity.permission.updated"
+	EventPermissionDeleted      EventType = "identity.permission.deleted"
+	EventUserRolesChanged       EventType = "identity.user_roles.changed"
+	EventRolePermissionsChanged EventType = "identity.role_permissions.changed"
+)
+
+// Event is a committed identity fact exposed to host audit and telemetry
+// integrations. Zero-valued IDs mean the event does not concern that entity.
+type Event struct {
+	Type         EventType
+	At           time.Time
+	UserID       UserID
+	SessionID    SessionID
+	RoleID       RoleID
+	PermissionID PermissionID
+	Username     string
+	RequestMeta  RequestMeta
+	Attributes   map[string]string
+}
+
+// EventSink observes identity facts after the related database operation has
+// succeeded. It intentionally cannot fail or roll back the completed action.
+type EventSink interface {
+	Record(context.Context, Event)
+}
+
+type EventSinkFunc func(context.Context, Event)
+
+func (f EventSinkFunc) Record(ctx context.Context, event Event) {
+	if f != nil {
+		f(ctx, event)
+	}
+}
+
+type LoginGuard interface {
+	Allow(context.Context, string, RequestMeta) error
+	Record(context.Context, string, RequestMeta, bool)
 }
 
 type UserCreate struct {
 	ID          UserID
 	Username    string
+	UsernameKey string
 	DisplayName string
 	Email       string
 	AvatarURL   string
@@ -256,7 +331,19 @@ type SessionRecord struct {
 	LoginIP       string
 	LastIP        string
 	BindingHash   []byte
-	UserAgentHash []byte
+	ExpiresAt     time.Time
+	CreatedAt     time.Time
+	LastSeenAt    time.Time
+	RevokedAt     *time.Time
+	RevokedReason string
+}
+
+// Session is the public, non-secret view of an identity session.
+type Session struct {
+	ID            SessionID
+	UserID        UserID
+	LoginIP       string
+	LastIP        string
 	ExpiresAt     time.Time
 	CreatedAt     time.Time
 	LastSeenAt    time.Time
@@ -265,14 +352,14 @@ type SessionRecord struct {
 }
 
 type IssuedSession struct {
-	Session *SessionRecord
+	Session *Session
 	Token   string
 }
 
 type UserRepository interface {
 	CreateUser(context.Context, UserCreate) (*User, error)
 	GetUser(context.Context, UserID) (*User, error)
-	GetUserByUsername(context.Context, string) (*User, error)
+	GetUserByUsernameKey(context.Context, string) (*User, error)
 	ListUsers(context.Context, UserFilter) ([]User, int, error)
 	UpdateUserProfile(context.Context, UserID, UserProfilePatch) (*User, error)
 	UpdateUserState(context.Context, []UserID, State, *time.Time, time.Time) (int64, error)
@@ -283,17 +370,20 @@ type UserRepository interface {
 type PasswordRepository interface {
 	GetPasswordCredential(context.Context, UserID) (*PasswordCredential, error)
 	UpsertPasswordCredential(context.Context, PasswordCredential) error
+	UpdatePasswordCredentialIfMatch(context.Context, UserID, string, string, PasswordCredential) (bool, error)
 	DeletePasswordCredentials(context.Context, []UserID) error
 }
 
 type SessionRepository interface {
 	CreateSession(context.Context, SessionRecord) error
 	GetSessionByTokenHash(context.Context, []byte) (*SessionRecord, error)
-	TouchSession(context.Context, SessionID, string, time.Time) error
+	ListSessionsForUser(context.Context, UserID) ([]SessionRecord, error)
+	TouchSession(context.Context, SessionID, string, time.Time, time.Time) error
 	RevokeSession(context.Context, SessionID, string, string, time.Time) error
 	DeleteSession(context.Context, SessionID) error
 	RevokeSessionsForUsers(context.Context, []UserID, string, time.Time) error
 	DeleteSessionsForUsers(context.Context, []UserID) error
+	DeleteExpiredSessions(context.Context, time.Time) (int64, error)
 }
 
 // AuthorizationRepository stores the generic role/permission graph. Codes are
@@ -302,6 +392,7 @@ type AuthorizationRepository interface {
 	ListRoles(context.Context, RoleFilter) ([]Role, int, error)
 	GetRole(context.Context, RoleID) (*Role, error)
 	GetRoleByCode(context.Context, string) (*Role, error)
+	UpsertRole(context.Context, Role) (*Role, error)
 	// LockRoleByCode returns a role while holding the transaction lock needed
 	// for one-time bootstrap operations.
 	LockRoleByCode(context.Context, string) (*Role, error)
@@ -312,6 +403,7 @@ type AuthorizationRepository interface {
 	ListPermissions(context.Context, PermissionFilter) ([]Permission, int, error)
 	GetPermission(context.Context, PermissionID) (*Permission, error)
 	GetPermissionByCode(context.Context, string) (*Permission, error)
+	UpsertPermission(context.Context, Permission) (*Permission, error)
 	CreatePermission(context.Context, Permission) (*Permission, error)
 	UpdatePermission(context.Context, PermissionID, PermissionInput, time.Time) (*Permission, error)
 	DeletePermission(context.Context, PermissionID) error
@@ -333,15 +425,18 @@ type TxManager interface {
 	WithinTx(context.Context, func(context.Context, UnitOfWork) error) error
 }
 
+// TxManagerWithDB is implemented by Bun-backed transaction managers that can
+// expose the active transaction to host-owned delete participants. The plain
+// TxManager contract remains sufficient for identity-only operations.
+type TxManagerWithDB interface {
+	TxManager
+	WithinTxDB(context.Context, func(context.Context, bun.IDB, UnitOfWork) error) error
+}
+
 type UserDirectory interface {
 	UserByID(context.Context, UserID) (*User, error)
 	UserByUsername(context.Context, string) (*User, error)
 }
-
-// UserDeleteHook runs before identity records are deleted. A host can use it
-// to remove dependent business records that identity cannot know about. If it
-// returns an error, the identity deletion is aborted.
-type UserDeleteHook func(context.Context, []UserID) error
 
 func DirectoryFromRepository(repository UserRepository) UserDirectory {
 	if repository == nil {
@@ -356,7 +451,7 @@ func (r repositoryDirectory) UserByID(ctx context.Context, id UserID) (*User, er
 	return r.GetUser(ctx, id)
 }
 func (r repositoryDirectory) UserByUsername(ctx context.Context, username string) (*User, error) {
-	return r.GetUserByUsername(ctx, username)
+	return r.GetUserByUsernameKey(ctx, UsernameKey(username))
 }
 
 type SessionResolver interface {
@@ -420,6 +515,7 @@ var (
 	ErrWeakPassword       = fmt.Errorf("%w: identity password does not meet policy", ErrInvalid)
 	ErrUnsupported        = errors.New("identity operation unsupported")
 	ErrForbidden          = errors.New("identity forbidden")
+	ErrRateLimited        = errors.New("identity rate limited")
 )
 
 func LowerASCIIUsernamePolicy(raw string) (string, error) {
@@ -449,11 +545,22 @@ func LowerASCIIUsernamePolicy(raw string) (string, error) {
 }
 
 func TrimUsernamePolicy(raw string) (string, error) {
-	value := strings.TrimSpace(raw)
-	if value == "" || len(value) > 128 {
+	value := norm.NFC.String(strings.TrimSpace(raw))
+	if value == "" || utf8.RuneCountInString(value) > 128 {
 		return "", ErrInvalidUsername
 	}
+	for _, r := range value {
+		if unicode.IsControl(r) || unicode.IsSpace(r) {
+			return "", ErrInvalidUsername
+		}
+	}
 	return value, nil
+}
+
+// UsernameKey returns the canonical comparison key used for username lookup
+// and uniqueness. The displayed username is preserved separately.
+func UsernameKey(value string) string {
+	return norm.NFC.String(cases.Fold().String(norm.NFC.String(strings.TrimSpace(value))))
 }
 
 func NormalizeRequestMeta(meta RequestMeta) (RequestMeta, error) {
@@ -466,7 +573,6 @@ func NormalizeRequestMeta(meta RequestMeta) (RequestMeta, error) {
 		meta.ClientIP = ip.String()
 	}
 	meta.UserAgent = strings.TrimSpace(meta.UserAgent)
-	meta.DeviceID = strings.TrimSpace(meta.DeviceID)
 	return meta, nil
 }
 

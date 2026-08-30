@@ -16,11 +16,13 @@ import (
 )
 
 const imageDefaultTTL = 2 * time.Minute
+const imageDefaultMaxItems = 4096
 
 var errImageChallengeLimitExceeded = errors.New("image challenge limit exceeded")
 
 // ImageProvider generates short-lived image challenges and keeps only their
-// answer digests in memory. A non-positive maxItems means no item limit.
+// answer digests in memory. A non-positive maxItems uses a bounded default;
+// in-memory challenges are suitable for a single process only.
 type ImageProvider struct {
 	mu         sync.Mutex
 	challenges map[string]imageChallenge
@@ -36,6 +38,9 @@ type imageChallenge struct {
 
 // NewImageProvider constructs an in-memory image challenge provider.
 func NewImageProvider(maxItems int) *ImageProvider {
+	if maxItems <= 0 {
+		maxItems = imageDefaultMaxItems
+	}
 	return &ImageProvider{
 		challenges: make(map[string]imageChallenge),
 		driver: driver.NewDriverString(driver.DriverString{

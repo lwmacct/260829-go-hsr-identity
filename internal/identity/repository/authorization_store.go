@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"uuid"
 
 	"github.com/lwmacct/260829-go-hsr-identity/pkg/identity/domain"
 	"github.com/uptrace/bun"
@@ -42,7 +43,7 @@ func applyRoleFilter(q *bun.SelectQuery, keyword string) *bun.SelectQuery {
 
 func (s *Store) GetRole(ctx context.Context, id domain.RoleID) (*domain.Role, error) {
 	m := new(RoleModel)
-	if err := s.db.NewSelect().Model(m).Where("r.id = ?", string(id)).Scan(ctx); err != nil {
+	if err := s.db.NewSelect().Model(m).Where("r.id = ?", id.String()).Scan(ctx); err != nil {
 		return nil, mapReadError(err)
 	}
 	r := roleFrom(m)
@@ -81,19 +82,27 @@ func (s *Store) LockRoleByCode(ctx context.Context, code string) (*domain.Role, 
 
 func (s *Store) CountRoleUsers(ctx context.Context, roleID domain.RoleID) (int, error) {
 	var count int
-	if err := s.db.NewRaw("SELECT count(*) FROM identity_user_roles WHERE role_id = ?", string(roleID)).Scan(ctx, &count); err != nil {
+	if err := s.db.NewRaw("SELECT count(*) FROM identity_user_roles WHERE role_id = ?", roleID.String()).Scan(ctx, &count); err != nil {
 		return 0, err
 	}
 	return count, nil
 }
 
 func (s *Store) CreateRole(ctx context.Context, in domain.Role) (*domain.Role, error) {
-	m := &RoleModel{ID: RoleID(in.ID), Code: in.Code, Name: in.Name, Description: in.Description, System: in.System, CreatedAt: in.CreatedAt, UpdatedAt: in.UpdatedAt}
+	m := &RoleModel{ID: in.ID.String(), Code: in.Code, Name: in.Name, Description: in.Description, System: in.System, CreatedAt: in.CreatedAt, UpdatedAt: in.UpdatedAt}
 	if _, err := s.db.NewInsert().Model(m).Exec(ctx); err != nil {
 		return nil, mapWriteError(err, false)
 	}
 	r := roleFrom(m)
 	return &r, nil
+}
+
+func (s *Store) UpsertRole(ctx context.Context, in domain.Role) (*domain.Role, error) {
+	m := &RoleModel{ID: in.ID.String(), Code: in.Code, Name: in.Name, Description: in.Description, System: in.System, CreatedAt: in.CreatedAt, UpdatedAt: in.UpdatedAt}
+	if _, err := s.db.NewInsert().Model(m).On("CONFLICT (code) DO UPDATE").Set("name = EXCLUDED.name").Set("description = EXCLUDED.description").Set("system = EXCLUDED.system").Set("updated_at = EXCLUDED.updated_at").Exec(ctx); err != nil {
+		return nil, mapWriteError(err, false)
+	}
+	return s.GetRoleByCode(ctx, in.Code)
 }
 
 func (s *Store) UpdateRole(ctx context.Context, id domain.RoleID, in domain.RoleInput, now time.Time) (*domain.Role, error) {
@@ -102,7 +111,7 @@ func (s *Store) UpdateRole(ctx context.Context, id domain.RoleID, in domain.Role
 		Set("name = ?", in.Name).
 		Set("description = ?", in.Description).
 		Set("updated_at = ?", now).
-		Where("id = ?", string(id)).Exec(ctx)
+		Where("id = ?", id.String()).Exec(ctx)
 	if err != nil {
 		return nil, mapWriteError(err, false)
 	}
@@ -114,13 +123,13 @@ func (s *Store) UpdateRole(ctx context.Context, id domain.RoleID, in domain.Role
 
 func (s *Store) DeleteRole(ctx context.Context, id domain.RoleID) error {
 	var system bool
-	if err := s.db.NewSelect().Model((*RoleModel)(nil)).Column("system").Where("id = ?", string(id)).Scan(ctx, &system); err != nil {
+	if err := s.db.NewSelect().Model((*RoleModel)(nil)).Column("system").Where("id = ?", id.String()).Scan(ctx, &system); err != nil {
 		return mapReadError(err)
 	}
 	if system {
 		return domain.ErrConflict
 	}
-	res, err := s.db.NewDelete().Model((*RoleModel)(nil)).Where("id = ?", string(id)).Exec(ctx)
+	res, err := s.db.NewDelete().Model((*RoleModel)(nil)).Where("id = ?", id.String()).Exec(ctx)
 	if err != nil {
 		return err
 	}
@@ -161,7 +170,7 @@ func applyPermissionFilter(q *bun.SelectQuery, keyword string) *bun.SelectQuery 
 
 func (s *Store) GetPermission(ctx context.Context, id domain.PermissionID) (*domain.Permission, error) {
 	m := new(PermissionModel)
-	if err := s.db.NewSelect().Model(m).Where("p.id = ?", string(id)).Scan(ctx); err != nil {
+	if err := s.db.NewSelect().Model(m).Where("p.id = ?", id.String()).Scan(ctx); err != nil {
 		return nil, mapReadError(err)
 	}
 	p := permissionFrom(m)
@@ -178,12 +187,20 @@ func (s *Store) GetPermissionByCode(ctx context.Context, code string) (*domain.P
 }
 
 func (s *Store) CreatePermission(ctx context.Context, in domain.Permission) (*domain.Permission, error) {
-	m := &PermissionModel{ID: PermissionID(in.ID), Code: in.Code, Name: in.Name, Description: in.Description, System: in.System, CreatedAt: in.CreatedAt, UpdatedAt: in.UpdatedAt}
+	m := &PermissionModel{ID: in.ID.String(), Code: in.Code, Name: in.Name, Description: in.Description, System: in.System, CreatedAt: in.CreatedAt, UpdatedAt: in.UpdatedAt}
 	if _, err := s.db.NewInsert().Model(m).Exec(ctx); err != nil {
 		return nil, mapWriteError(err, false)
 	}
 	p := permissionFrom(m)
 	return &p, nil
+}
+
+func (s *Store) UpsertPermission(ctx context.Context, in domain.Permission) (*domain.Permission, error) {
+	m := &PermissionModel{ID: in.ID.String(), Code: in.Code, Name: in.Name, Description: in.Description, System: in.System, CreatedAt: in.CreatedAt, UpdatedAt: in.UpdatedAt}
+	if _, err := s.db.NewInsert().Model(m).On("CONFLICT (code) DO UPDATE").Set("name = EXCLUDED.name").Set("description = EXCLUDED.description").Set("system = EXCLUDED.system").Set("updated_at = EXCLUDED.updated_at").Exec(ctx); err != nil {
+		return nil, mapWriteError(err, false)
+	}
+	return s.GetPermissionByCode(ctx, in.Code)
 }
 
 func (s *Store) UpdatePermission(ctx context.Context, id domain.PermissionID, in domain.PermissionInput, now time.Time) (*domain.Permission, error) {
@@ -192,7 +209,7 @@ func (s *Store) UpdatePermission(ctx context.Context, id domain.PermissionID, in
 		Set("name = ?", in.Name).
 		Set("description = ?", in.Description).
 		Set("updated_at = ?", now).
-		Where("id = ?", string(id)).Exec(ctx)
+		Where("id = ?", id.String()).Exec(ctx)
 	if err != nil {
 		return nil, mapWriteError(err, false)
 	}
@@ -204,13 +221,13 @@ func (s *Store) UpdatePermission(ctx context.Context, id domain.PermissionID, in
 
 func (s *Store) DeletePermission(ctx context.Context, id domain.PermissionID) error {
 	var system bool
-	if err := s.db.NewSelect().Model((*PermissionModel)(nil)).Column("system").Where("id = ?", string(id)).Scan(ctx, &system); err != nil {
+	if err := s.db.NewSelect().Model((*PermissionModel)(nil)).Column("system").Where("id = ?", id.String()).Scan(ctx, &system); err != nil {
 		return mapReadError(err)
 	}
 	if system {
 		return domain.ErrConflict
 	}
-	res, err := s.db.NewDelete().Model((*PermissionModel)(nil)).Where("id = ?", string(id)).Exec(ctx)
+	res, err := s.db.NewDelete().Model((*PermissionModel)(nil)).Where("id = ?", id.String()).Exec(ctx)
 	if err != nil {
 		return err
 	}
@@ -224,7 +241,7 @@ func (s *Store) ListUserRoles(ctx context.Context, userID domain.UserID) ([]doma
 	rows := make([]RoleModel, 0)
 	err := s.db.NewSelect().Model(&rows).
 		Join("JOIN identity_user_roles AS ur ON ur.role_id = r.id").
-		Where("ur.user_id = ?", string(userID)).
+		Where("ur.user_id = ?", userID.String()).
 		OrderExpr("r.code ASC").Scan(ctx)
 	if err != nil {
 		return nil, mapReadError(err)
@@ -237,7 +254,7 @@ func (s *Store) ListUserRoles(ctx context.Context, userID domain.UserID) ([]doma
 }
 
 func (s *Store) ReplaceUserRoles(ctx context.Context, userID domain.UserID, roleIDs []domain.RoleID) error {
-	if _, err := s.db.NewDelete().Model((*UserRoleModel)(nil)).Where("user_id = ?", string(userID)).Exec(ctx); err != nil {
+	if _, err := s.db.NewDelete().Model((*UserRoleModel)(nil)).Where("user_id = ?", userID.String()).Exec(ctx); err != nil {
 		return err
 	}
 	if len(roleIDs) == 0 {
@@ -251,7 +268,7 @@ func (s *Store) ReplaceUserRoles(ctx context.Context, userID domain.UserID, role
 			continue
 		}
 		seen[id] = struct{}{}
-		rows = append(rows, UserRoleModel{UserID: UserID(userID), RoleID: RoleID(id), CreatedAt: now})
+		rows = append(rows, UserRoleModel{UserID: userID.String(), RoleID: id.String(), CreatedAt: now})
 	}
 	if len(rows) == 0 {
 		return nil
@@ -266,7 +283,7 @@ func (s *Store) ListRolePermissions(ctx context.Context, roleID domain.RoleID) (
 	rows := make([]PermissionModel, 0)
 	err := s.db.NewSelect().Model(&rows).
 		Join("JOIN identity_role_permissions AS rp ON rp.permission_id = p.id").
-		Where("rp.role_id = ?", string(roleID)).
+		Where("rp.role_id = ?", roleID.String()).
 		OrderExpr("p.code ASC").Scan(ctx)
 	if err != nil {
 		return nil, mapReadError(err)
@@ -279,7 +296,7 @@ func (s *Store) ListRolePermissions(ctx context.Context, roleID domain.RoleID) (
 }
 
 func (s *Store) ReplaceRolePermissions(ctx context.Context, roleID domain.RoleID, permissionIDs []domain.PermissionID) error {
-	if _, err := s.db.NewDelete().Model((*RolePermissionModel)(nil)).Where("role_id = ?", string(roleID)).Exec(ctx); err != nil {
+	if _, err := s.db.NewDelete().Model((*RolePermissionModel)(nil)).Where("role_id = ?", roleID.String()).Exec(ctx); err != nil {
 		return err
 	}
 	if len(permissionIDs) == 0 {
@@ -293,7 +310,7 @@ func (s *Store) ReplaceRolePermissions(ctx context.Context, roleID domain.RoleID
 			continue
 		}
 		seen[id] = struct{}{}
-		rows = append(rows, RolePermissionModel{RoleID: RoleID(roleID), PermissionID: PermissionID(id), CreatedAt: now})
+		rows = append(rows, RolePermissionModel{RoleID: roleID.String(), PermissionID: id.String(), CreatedAt: now})
 	}
 	if len(rows) == 0 {
 		return nil
@@ -315,7 +332,7 @@ func (s *Store) ListUserClaims(ctx context.Context, userID domain.UserID) (domai
 		Join("LEFT JOIN identity_role_permissions AS rp ON rp.role_id = r.id").
 		Join("LEFT JOIN identity_permissions AS p ON p.id = rp.permission_id").
 		ColumnExpr("r.code AS role_code, p.code AS permission_code").
-		Where("ur.user_id = ?", string(userID)).
+		Where("ur.user_id = ?", userID.String()).
 		Scan(ctx, &rows)
 	if err != nil {
 		return domain.Claims{}, err
@@ -344,11 +361,13 @@ func (s *Store) ListUserClaims(ctx context.Context, userID domain.UserID) (domai
 }
 
 func roleFrom(m *RoleModel) domain.Role {
-	return domain.Role{ID: domain.RoleID(m.ID), Code: m.Code, Name: m.Name, Description: m.Description, System: m.System, CreatedAt: m.CreatedAt, UpdatedAt: m.UpdatedAt}
+	id, _ := uuid.Parse(m.ID)
+	return domain.Role{ID: id, Code: m.Code, Name: m.Name, Description: m.Description, System: m.System, CreatedAt: m.CreatedAt, UpdatedAt: m.UpdatedAt}
 }
 
 func permissionFrom(m *PermissionModel) domain.Permission {
-	return domain.Permission{ID: domain.PermissionID(m.ID), Code: m.Code, Name: m.Name, Description: m.Description, System: m.System, CreatedAt: m.CreatedAt, UpdatedAt: m.UpdatedAt}
+	id, _ := uuid.Parse(m.ID)
+	return domain.Permission{ID: id, Code: m.Code, Name: m.Name, Description: m.Description, System: m.System, CreatedAt: m.CreatedAt, UpdatedAt: m.UpdatedAt}
 }
 
 var _ domain.AuthorizationRepository = (*Store)(nil)

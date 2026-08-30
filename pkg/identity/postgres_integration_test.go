@@ -57,6 +57,13 @@ func TestPostgreSQLLifecycle(t *testing.T) {
 	if err := identity.ApplySchema(ctx, db); err != nil {
 		t.Fatal(err)
 	}
+	now := "2026-08-30T00:00:00Z"
+	if _, err := db.NewRaw(
+		"INSERT INTO identity_users (id, username, username_key, display_name, email, avatar_url, state, created_at, updated_at) VALUES (?, 'bad-v4', 'bad-v4', 'bad-v4', '', '', 'active', ?, ?)",
+		"00000000-0000-4000-8000-000000000000", now, now,
+	).Exec(ctx); err == nil {
+		t.Fatal("PostgreSQL schema accepted a UUIDv4 identity user")
+	}
 	module, err := identity.New(identity.Options{
 		DB:       db,
 		Password: identity.PasswordOptions{Policy: identity.PasswordPolicy{MinLength: 8}},

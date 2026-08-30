@@ -6,6 +6,7 @@ import (
 	"errors"
 	"strings"
 	"time"
+	"uuid"
 
 	"github.com/lwmacct/260829-go-hsr-identity/pkg/identity/domain"
 	"github.com/uptrace/bun"
@@ -30,6 +31,12 @@ func (s *Store) Sessions() domain.SessionRepository            { return s }
 func (s *Store) Authorization() domain.AuthorizationRepository { return s }
 
 func (s *Store) WithinTx(ctx context.Context, fn func(context.Context, domain.UnitOfWork) error) error {
+	return s.WithinTxDB(ctx, func(txctx context.Context, _ bun.IDB, uow domain.UnitOfWork) error {
+		return fn(txctx, uow)
+	})
+}
+
+func (s *Store) WithinTxDB(ctx context.Context, fn func(context.Context, bun.IDB, domain.UnitOfWork) error) error {
 	if s == nil || s.root == nil {
 		return errors.New("identity repository: transaction requires root bun database")
 	}
@@ -37,7 +44,7 @@ func (s *Store) WithinTx(ctx context.Context, fn func(context.Context, domain.Un
 		return errors.New("identity repository: transaction callback is required")
 	}
 	return s.root.RunInTx(ctx, nil, func(txctx context.Context, tx bun.Tx) error {
-		return fn(txctx, NewStore(tx))
+		return fn(txctx, tx, NewStore(tx))
 	})
 }
 
@@ -47,7 +54,7 @@ func (s *Store) CreateUser(ctx context.Context, in domain.UserCreate) (*domain.U
 		return nil, err
 	}
 	in.ID = id
-	m := &UserModel{ID: string(in.ID), Username: in.Username, DisplayName: in.DisplayName, Email: in.Email, AvatarURL: in.AvatarURL, State: string(in.State), DisabledAt: in.DisabledAt, CreatedAt: in.CreatedAt, UpdatedAt: in.UpdatedAt}
+	m := &UserModel{ID: in.ID.String(), Username: in.Username, UsernameKey: in.UsernameKey, DisplayName: in.DisplayName, Email: in.Email, AvatarURL: in.AvatarURL, State: string(in.State), DisabledAt: in.DisabledAt, CreatedAt: in.CreatedAt, UpdatedAt: in.UpdatedAt}
 	if _, err := s.db.NewInsert().Model(m).Exec(ctx); err != nil {
 		return nil, mapWriteError(err, true)
 	}
@@ -56,15 +63,15 @@ func (s *Store) CreateUser(ctx context.Context, in domain.UserCreate) (*domain.U
 
 func (s *Store) GetUser(ctx context.Context, id domain.UserID) (*domain.User, error) {
 	m := new(UserModel)
-	if err := s.db.NewSelect().Model(m).Where("u.id = ?", string(id)).Scan(ctx); err != nil {
+	if err := s.db.NewSelect().Model(m).Where("u.id = ?", id.String()).Scan(ctx); err != nil {
 		return nil, mapReadError(err)
 	}
 	return userFrom(m), nil
 }
 
-func (s *Store) GetUserByUsername(ctx context.Context, username string) (*domain.User, error) {
+func (s *Store) GetUserByUsernameKey(ctx context.Context, usernameKey string) (*domain.User, error) {
 	m := new(UserModel)
-	if err := s.db.NewSelect().Model(m).Where("u.username = ?", username).Scan(ctx); err != nil {
+	if err := s.db.NewSelect().Model(m).Where("u.username_key = ?", usernameKey).Scan(ctx); err != nil {
 		return nil, mapReadError(err)
 	}
 	return userFrom(m), nil
@@ -75,7 +82,7 @@ func (s *Store) UserByID(ctx context.Context, id domain.UserID) (*domain.User, e
 }
 
 func (s *Store) UserByUsername(ctx context.Context, username string) (*domain.User, error) {
-	return s.GetUserByUsername(ctx, username)
+	return s.GetUserByUsernameKey(ctx, domain.UsernameKey(username))
 }
 
 func (s *Store) ListUsers(ctx context.Context, filter domain.UserFilter) ([]domain.User, int, error) {
@@ -111,7 +118,7 @@ func applyUserFilter(q *bun.SelectQuery, filter domain.UserFilter) *bun.SelectQu
 }
 
 func (s *Store) UpdateUserProfile(ctx context.Context, id domain.UserID, p domain.UserProfilePatch) (*domain.User, error) {
-	res, err := s.db.NewUpdate().Model((*UserModel)(nil)).Set("display_name = ?", p.DisplayName).Set("email = ?", p.Email).Set("avatar_url = ?", p.AvatarURL).Set("updated_at = ?", p.UpdatedAt).Where("id = ?", string(id)).Exec(ctx)
+	res, err := s.db.NewUpdate().Model((*UserModel)(nil)).Set("display_name = ?", p.DisplayName).Set("email = ?", p.Email).Set("avatar_url = ?", p.AvatarURL).Set("updated_at = ?", p.UpdatedAt).Where("id = ?", id.String()).Exec(ctx)
 	if err != nil {
 		return nil, mapWriteError(err, false)
 	}
@@ -129,7 +136,7 @@ func (s *Store) UpdateUserState(ctx context.Context, ids []domain.UserID, state 
 	args := make([]any, 0, len(ids)+3)
 	for i, id := range ids {
 		values[i] = "?"
-		args = append(args, string(id))
+		args = append(args, id.String())
 	}
 	args = append([]any{string(state), disabledAt, now}, args...)
 	query := "UPDATE identity_users SET state = ?, disabled_at = ?, updated_at = ? WHERE id IN (" + strings.Join(values, ",") + ")"
@@ -141,7 +148,7 @@ func (s *Store) UpdateUserState(ctx context.Context, ids []domain.UserID, state 
 }
 
 func (s *Store) MarkUserLogin(ctx context.Context, id domain.UserID, now time.Time) error {
-	res, err := s.db.NewUpdate().Model((*UserModel)(nil)).Set("last_login_at = ?", now).Set("updated_at = ?", now).Where("id = ?", string(id)).Exec(ctx)
+	res, err := s.db.NewUpdate().Model((*UserModel)(nil)).Set("last_login_at = ?", now).Set("updated_at = ?", now).Where("id = ?", id.String()).Exec(ctx)
 	if err != nil {
 		return err
 	}
@@ -160,13 +167,13 @@ func (s *Store) DeleteUsers(ctx context.Context, ids []domain.UserID) error {
 		// Delete dependents explicitly as well as declaring ON DELETE CASCADE.
 		// This keeps behavior deterministic on SQLite, where foreign-key
 		// enforcement is opt-in, and on hosts with legacy schemas.
-		if _, err := s.db.NewDelete().Model((*SessionModel)(nil)).Where("user_id = ?", string(id)).Exec(ctx); err != nil {
+		if _, err := s.db.NewDelete().Model((*SessionModel)(nil)).Where("user_id = ?", id.String()).Exec(ctx); err != nil {
 			return err
 		}
-		if _, err := s.db.NewDelete().Model((*PasswordModel)(nil)).Where("user_id = ?", string(id)).Exec(ctx); err != nil {
+		if _, err := s.db.NewDelete().Model((*PasswordModel)(nil)).Where("user_id = ?", id.String()).Exec(ctx); err != nil {
 			return err
 		}
-		res, err := s.db.NewDelete().Model((*UserModel)(nil)).Where("id = ?", string(id)).Exec(ctx)
+		res, err := s.db.NewDelete().Model((*UserModel)(nil)).Where("id = ?", id.String()).Exec(ctx)
 		if err != nil {
 			return err
 		}
@@ -180,10 +187,11 @@ func (s *Store) DeleteUsers(ctx context.Context, ids []domain.UserID) error {
 
 func (s *Store) GetPasswordCredential(ctx context.Context, id domain.UserID) (*domain.PasswordCredential, error) {
 	m := new(PasswordModel)
-	if err := s.db.NewSelect().Model(m).Where("ip.user_id = ?", string(id)).Scan(ctx); err != nil {
+	if err := s.db.NewSelect().Model(m).Where("ip.user_id = ?", id.String()).Scan(ctx); err != nil {
 		return nil, mapReadError(err)
 	}
-	return &domain.PasswordCredential{UserID: domain.UserID(m.UserID), Scheme: m.Scheme, Hash: m.Hash, PasswordChangedAt: m.PasswordChangedAt, CreatedAt: m.CreatedAt, UpdatedAt: m.UpdatedAt}, nil
+	userID, _ := uuid.Parse(m.UserID)
+	return &domain.PasswordCredential{UserID: userID, Scheme: m.Scheme, Hash: m.Hash, PasswordChangedAt: m.PasswordChangedAt, CreatedAt: m.CreatedAt, UpdatedAt: m.UpdatedAt}, nil
 }
 
 func (s *Store) UpsertPasswordCredential(ctx context.Context, in domain.PasswordCredential) error {
@@ -192,16 +200,36 @@ func (s *Store) UpsertPasswordCredential(ctx context.Context, in domain.Password
 		return err
 	}
 	in.UserID = id
-	m := &PasswordModel{UserID: string(in.UserID), Scheme: in.Scheme, Hash: in.Hash, PasswordChangedAt: in.PasswordChangedAt, CreatedAt: in.CreatedAt, UpdatedAt: in.UpdatedAt}
+	m := &PasswordModel{UserID: in.UserID.String(), Scheme: in.Scheme, Hash: in.Hash, PasswordChangedAt: in.PasswordChangedAt, CreatedAt: in.CreatedAt, UpdatedAt: in.UpdatedAt}
 	if _, err := s.db.NewInsert().Model(m).On("CONFLICT (user_id) DO UPDATE").Set("scheme = EXCLUDED.scheme").Set("hash = EXCLUDED.hash").Set("password_changed_at = EXCLUDED.password_changed_at").Set("updated_at = EXCLUDED.updated_at").Exec(ctx); err != nil {
 		return mapWriteError(err, false)
 	}
 	return nil
 }
 
+func (s *Store) UpdatePasswordCredentialIfMatch(ctx context.Context, id domain.UserID, expectedScheme, expectedHash string, in domain.PasswordCredential) (bool, error) {
+	if _, err := domain.NormalizeUserID(id); err != nil {
+		return false, err
+	}
+	res, err := s.db.NewUpdate().Model((*PasswordModel)(nil)).
+		Set("scheme = ?", in.Scheme).
+		Set("hash = ?", in.Hash).
+		Set("password_changed_at = ?", in.PasswordChangedAt).
+		Set("updated_at = ?", in.UpdatedAt).
+		Where("user_id = ?", id.String()).
+		Where("scheme = ?", expectedScheme).
+		Where("hash = ?", expectedHash).
+		Exec(ctx)
+	if err != nil {
+		return false, mapWriteError(err, false)
+	}
+	updated, err := res.RowsAffected()
+	return updated == 1, err
+}
+
 func (s *Store) DeletePasswordCredentials(ctx context.Context, ids []domain.UserID) error {
 	for _, id := range ids {
-		if _, err := s.db.NewDelete().Model((*PasswordModel)(nil)).Where("user_id = ?", string(id)).Exec(ctx); err != nil {
+		if _, err := s.db.NewDelete().Model((*PasswordModel)(nil)).Where("user_id = ?", id.String()).Exec(ctx); err != nil {
 			return err
 		}
 	}
@@ -218,7 +246,7 @@ func (s *Store) CreateSession(ctx context.Context, in domain.SessionRecord) erro
 		return err
 	}
 	in.ID, in.UserID = id, userID
-	m := &SessionModel{ID: string(in.ID), TokenHash: in.TokenHash, UserID: string(in.UserID), LoginIP: in.LoginIP, LastIP: in.LastIP, BindingHash: in.BindingHash, UserAgentHash: in.UserAgentHash, ExpiresAt: in.ExpiresAt, CreatedAt: in.CreatedAt, LastSeenAt: in.LastSeenAt, RevokedAt: in.RevokedAt, RevokedReason: in.RevokedReason}
+	m := &SessionModel{ID: in.ID.String(), TokenHash: in.TokenHash, UserID: in.UserID.String(), LoginIP: in.LoginIP, LastIP: in.LastIP, BindingHash: in.BindingHash, ExpiresAt: in.ExpiresAt, CreatedAt: in.CreatedAt, LastSeenAt: in.LastSeenAt, RevokedAt: in.RevokedAt, RevokedReason: in.RevokedReason}
 	if _, err := s.db.NewInsert().Model(m).Exec(ctx); err != nil {
 		return mapWriteError(err, false)
 	}
@@ -232,19 +260,27 @@ func (s *Store) GetSessionByTokenHash(ctx context.Context, hash []byte) (*domain
 	}
 	return sessionFrom(m), nil
 }
-func (s *Store) TouchSession(ctx context.Context, id domain.SessionID, ip string, now time.Time) error {
-	res, err := s.db.NewUpdate().Model((*SessionModel)(nil)).Set("last_ip = ?", ip).Set("last_seen_at = ?", now).Where("id = ?", string(id)).Exec(ctx)
+func (s *Store) ListSessionsForUser(ctx context.Context, userID domain.UserID) ([]domain.SessionRecord, error) {
+	rows := make([]SessionModel, 0)
+	if err := s.db.NewSelect().Model(&rows).Where("sess.user_id = ?", userID.String()).OrderExpr("sess.created_at DESC, sess.id DESC").Scan(ctx); err != nil {
+		return nil, mapReadError(err)
+	}
+	out := make([]domain.SessionRecord, len(rows))
+	for i := range rows {
+		out[i] = *sessionFrom(&rows[i])
+	}
+	return out, nil
+}
+func (s *Store) TouchSession(ctx context.Context, id domain.SessionID, ip string, seenBefore, now time.Time) error {
+	res, err := s.db.NewUpdate().Model((*SessionModel)(nil)).Set("last_ip = ?", ip).Set("last_seen_at = ?", now).Where("id = ?", id.String()).Where("last_seen_at <= ?", seenBefore).Where("revoked_at IS NULL").Exec(ctx)
 	if err != nil {
 		return err
 	}
-	n, _ := res.RowsAffected()
-	if n == 0 {
-		return domain.ErrNotFound
-	}
+	_, _ = res.RowsAffected()
 	return nil
 }
 func (s *Store) RevokeSession(ctx context.Context, id domain.SessionID, reason, ip string, now time.Time) error {
-	res, err := s.db.NewUpdate().Model((*SessionModel)(nil)).Set("revoked_at = ?", now).Set("revoked_reason = ?", reason).Set("last_ip = ?", ip).Set("last_seen_at = ?", now).Where("id = ?", string(id)).Exec(ctx)
+	res, err := s.db.NewUpdate().Model((*SessionModel)(nil)).Set("revoked_at = ?", now).Set("revoked_reason = ?", reason).Set("last_ip = ?", ip).Set("last_seen_at = ?", now).Where("id = ?", id.String()).Exec(ctx)
 	if err != nil {
 		return err
 	}
@@ -255,7 +291,7 @@ func (s *Store) RevokeSession(ctx context.Context, id domain.SessionID, reason, 
 	return nil
 }
 func (s *Store) DeleteSession(ctx context.Context, id domain.SessionID) error {
-	_, err := s.db.NewDelete().Model((*SessionModel)(nil)).Where("id = ?", string(id)).Exec(ctx)
+	_, err := s.db.NewDelete().Model((*SessionModel)(nil)).Where("id = ?", id.String()).Exec(ctx)
 	return err
 }
 func (s *Store) RevokeSessionsForUsers(ctx context.Context, ids []domain.UserID, reason string, now time.Time) error {
@@ -266,18 +302,26 @@ func (s *Store) RevokeSessionsForUsers(ctx context.Context, ids []domain.UserID,
 	args := []any{now, reason}
 	for i, id := range ids {
 		marks[i] = "?"
-		args = append(args, string(id))
+		args = append(args, id.String())
 	}
 	_, err := s.db.NewRaw("UPDATE identity_sessions SET revoked_at = ?, revoked_reason = ? WHERE user_id IN ("+strings.Join(marks, ",")+") AND revoked_at IS NULL", args...).Exec(ctx)
 	return err
 }
 func (s *Store) DeleteSessionsForUsers(ctx context.Context, ids []domain.UserID) error {
 	for _, id := range ids {
-		if _, err := s.db.NewDelete().Model((*SessionModel)(nil)).Where("user_id = ?", string(id)).Exec(ctx); err != nil {
+		if _, err := s.db.NewDelete().Model((*SessionModel)(nil)).Where("user_id = ?", id.String()).Exec(ctx); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func (s *Store) DeleteExpiredSessions(ctx context.Context, before time.Time) (int64, error) {
+	res, err := s.db.NewDelete().Model((*SessionModel)(nil)).Where("expires_at <= ?", before).Exec(ctx)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
 }
 
 func normalizePage(page, size int) (int, int) {
@@ -312,10 +356,13 @@ func mapWriteError(err error, username bool) error {
 	return err
 }
 func userFrom(m *UserModel) *domain.User {
-	return &domain.User{ID: domain.UserID(m.ID), Username: m.Username, DisplayName: m.DisplayName, Email: m.Email, AvatarURL: m.AvatarURL, State: domain.State(m.State), DisabledAt: m.DisabledAt, LastLoginAt: m.LastLoginAt, CreatedAt: m.CreatedAt, UpdatedAt: m.UpdatedAt}
+	id, _ := uuid.Parse(m.ID)
+	return &domain.User{ID: id, Username: m.Username, DisplayName: m.DisplayName, Email: m.Email, AvatarURL: m.AvatarURL, State: domain.State(m.State), DisabledAt: m.DisabledAt, LastLoginAt: m.LastLoginAt, CreatedAt: m.CreatedAt, UpdatedAt: m.UpdatedAt}
 }
 func sessionFrom(m *SessionModel) *domain.SessionRecord {
-	return &domain.SessionRecord{ID: domain.SessionID(m.ID), TokenHash: append([]byte(nil), m.TokenHash...), UserID: domain.UserID(m.UserID), LoginIP: m.LoginIP, LastIP: m.LastIP, BindingHash: append([]byte(nil), m.BindingHash...), UserAgentHash: append([]byte(nil), m.UserAgentHash...), ExpiresAt: m.ExpiresAt, CreatedAt: m.CreatedAt, LastSeenAt: m.LastSeenAt, RevokedAt: m.RevokedAt, RevokedReason: m.RevokedReason}
+	sessionID, _ := uuid.Parse(m.ID)
+	userID, _ := uuid.Parse(m.UserID)
+	return &domain.SessionRecord{ID: sessionID, TokenHash: append([]byte(nil), m.TokenHash...), UserID: userID, LoginIP: m.LoginIP, LastIP: m.LastIP, BindingHash: append([]byte(nil), m.BindingHash...), ExpiresAt: m.ExpiresAt, CreatedAt: m.CreatedAt, LastSeenAt: m.LastSeenAt, RevokedAt: m.RevokedAt, RevokedReason: m.RevokedReason}
 }
 
 var _ domain.UserRepository = (*Store)(nil)
@@ -323,3 +370,4 @@ var _ domain.PasswordRepository = (*Store)(nil)
 var _ domain.SessionRepository = (*Store)(nil)
 var _ domain.UnitOfWork = (*Store)(nil)
 var _ domain.TxManager = (*Store)(nil)
+var _ domain.TxManagerWithDB = (*Store)(nil)

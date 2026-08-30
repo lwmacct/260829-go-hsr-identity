@@ -36,14 +36,26 @@ type HumanChallengeResponse struct {
 	Token       string
 }
 
-// HumanChallengeProvider is the host-extensible challenge contract. Identity
-// owns the lifecycle and HTTP integration; hosts may supply image, hCaptcha,
-// Turnstile, or another provider without importing identity internals.
-type HumanChallengeProvider interface {
+// HumanChallengeVerifier is the host-extensible verification contract.
+type HumanChallengeVerifier interface {
+	Name() string
+	PublicConfig() HumanChallengeConfig
+	Verify(context.Context, HumanChallengeResponse, RequestMeta) error
+}
+
+// HumanChallengeCreator is implemented by providers that issue a challenge
+// instance (for example the built-in image provider).
+type HumanChallengeCreator interface {
 	Name() string
 	PublicConfig() HumanChallengeConfig
 	Create(context.Context, RequestMeta) (*HumanChallenge, error)
-	Verify(context.Context, HumanChallengeResponse, RequestMeta) error
+}
+
+// HumanChallengeProvider combines verification and creation for providers
+// that support both operations.
+type HumanChallengeProvider interface {
+	HumanChallengeVerifier
+	HumanChallengeCreator
 }
 
 var (

@@ -115,3 +115,60 @@ func TestRemoteTokenProviderRejectsInvalidConfigurationAndResponses(t *testing.T
 		t.Fatalf("bad gateway error = %v, want invalid challenge", err)
 	}
 }
+
+func TestRemoteTokenProviderValidatesHostnameAndAction(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"success":  true,
+			"hostname": "LOGIN.EXAMPLE.COM",
+			"action":   "login",
+		})
+	}))
+	defer server.Close()
+	provider, err := NewRemoteTokenProvider(RemoteTokenOptions{
+		Provider:         "turnstile",
+		SiteKey:          "site-key",
+		Secret:           "secret",
+		VerifyURL:        server.URL,
+		Client:           server.Client(),
+		AllowedHostnames: []string{"login.example.com"},
+		ExpectedAction:   "login",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := provider.Verify(context.Background(), domain.HumanChallengeResponse{Token: "token"}, domain.RequestMeta{}); err != nil {
+		t.Fatalf("valid provider assertions: %v", err)
+	}
+
+	provider.action = "register"
+	if err := provider.Verify(context.Background(), domain.HumanChallengeResponse{Token: "token"}, domain.RequestMeta{}); !errors.Is(err, domain.ErrHumanChallengeInvalid) {
+		t.Fatalf("action mismatch error = %v", err)
+	}
+	provider.action = "login"
+	provider.allowed = map[string]struct{}{"other.example.com": {}}
+	if err := provider.Verify(context.Background(), domain.HumanChallengeResponse{Token: "token"}, domain.RequestMeta{}); !errors.Is(err, domain.ErrHumanChallengeInvalid) {
+		t.Fatalf("hostname mismatch error = %v", err)
+	}
+}
+
+func TestRemoteTokenProviderLimitsResponseBody(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"success":true,"padding":"` + strings.Repeat("x", 512) + `"}`))
+	}))
+	defer server.Close()
+	provider, err := NewRemoteTokenProvider(RemoteTokenOptions{
+		Provider:         "turnstile",
+		SiteKey:          "site-key",
+		Secret:           "secret",
+		VerifyURL:        server.URL,
+		Client:           server.Client(),
+		MaxResponseBytes: 32,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := provider.Verify(context.Background(), domain.HumanChallengeResponse{Token: "token"}, domain.RequestMeta{}); err == nil {
+		t.Fatal("oversized remote response was accepted")
+	}
+}

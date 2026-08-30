@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"uuid"
 
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/danielgtaylor/huma/v2/adapters/humago"
@@ -28,8 +29,17 @@ type Config struct {
 	TokenExtractor      func(*http.Request) string
 	RequestMetaResolver func(*http.Request) (domain.RequestMeta, error)
 	Authorizer          func(context.Context, *domain.Principal, string) error
-	ChallengeProvider   domain.HumanChallengeProvider
+	ChallengeVerifier   domain.HumanChallengeVerifier
+	ChallengeCreator    domain.HumanChallengeCreator
 	RequireChallenge    bool
+}
+
+func parseUUID7(raw string) (uuid.UUID, error) {
+	id, err := uuid.Parse(strings.TrimSpace(raw))
+	if err != nil || id == uuid.Nil() || id[6]>>4 != 7 {
+		return uuid.Nil(), domain.ErrInvalid
+	}
+	return id, nil
 }
 
 type Services struct {
@@ -99,16 +109,16 @@ func (e *Endpoint) verifyChallenge(ctx context.Context, response *challengeBody)
 	if !e.config.RequireChallenge {
 		return nil
 	}
-	if e.config.ChallengeProvider == nil || response == nil {
+	if e.config.ChallengeVerifier == nil || response == nil {
 		return domain.ErrHumanChallengeInvalid
 	}
-	if strings.TrimSpace(response.Provider) == "" || strings.TrimSpace(response.Provider) != strings.TrimSpace(e.config.ChallengeProvider.Name()) {
+	if strings.TrimSpace(response.Provider) == "" || strings.TrimSpace(response.Provider) != strings.TrimSpace(e.config.ChallengeVerifier.Name()) {
 		return domain.ErrHumanChallengeInvalid
 	}
 	if err := requestMetaErrorFromContext(ctx); err != nil {
 		return err
 	}
-	if err := e.config.ChallengeProvider.Verify(ctx, response.domain(), requestMetaFromContext(ctx)); err != nil {
+	if err := e.config.ChallengeVerifier.Verify(ctx, response.domain(), requestMetaFromContext(ctx)); err != nil {
 		return domain.ErrHumanChallengeInvalid
 	}
 	return nil
@@ -116,21 +126,21 @@ func (e *Endpoint) verifyChallenge(ctx context.Context, response *challengeBody)
 
 func (e *Endpoint) configOutput(_ context.Context, _ *struct{}) (*struct{ Body configView }, error) {
 	body := configView{RegistrationEnabled: e.config.RegistrationEnabled}
-	if e.config.ChallengeProvider != nil {
-		public := e.config.ChallengeProvider.PublicConfig()
+	if e.config.ChallengeVerifier != nil {
+		public := e.config.ChallengeVerifier.PublicConfig()
 		body.Challenge = &humanChallengeConfigView{Provider: public.Provider, SiteKey: public.SiteKey, Required: e.config.RequireChallenge}
 	}
 	return &struct{ Body configView }{Body: body}, nil
 }
 
 func (e *Endpoint) createChallenge(ctx context.Context, _ *struct{}) (*struct{ Body challengeView }, error) {
-	if e.config.ChallengeProvider == nil {
+	if e.config.ChallengeCreator == nil {
 		return nil, huma.Error400BadRequest("challenge provider unsupported")
 	}
 	if err := requestMetaErrorFromContext(ctx); err != nil {
 		return nil, mapError(err, false)
 	}
-	challenge, err := e.config.ChallengeProvider.Create(ctx, requestMetaFromContext(ctx))
+	challenge, err := e.config.ChallengeCreator.Create(ctx, requestMetaFromContext(ctx))
 	if err != nil {
 		if errors.Is(err, domain.ErrHumanChallengeLimitExceeded) {
 			return nil, huma.Error429TooManyRequests("too many challenges")
@@ -167,6 +177,10 @@ func (e *Endpoint) OptionalMiddleware() func(huma.Context, func(huma.Context)) {
 
 func (e *Endpoint) RequiredMiddleware(api huma.API) func(huma.Context, func(huma.Context)) {
 	return func(ctx huma.Context, next func(huma.Context)) {
+		if _, ok := domain.PrincipalFromContext(ctx.Context()); ok {
+			next(ctx)
+			return
+		}
 		e.OptionalMiddleware()(ctx, func(nextCtx huma.Context) {
 			if _, ok := domain.PrincipalFromContext(nextCtx.Context()); !ok {
 				_ = huma.WriteErr(api, nextCtx, http.StatusUnauthorized, "unauthorized")
@@ -251,7 +265,7 @@ func (e *Endpoint) requestMeta(r *http.Request) (domain.RequestMeta, error) {
 	if host, _, err := net.SplitHostPort(ip); err == nil {
 		ip = host
 	}
-	return domain.NormalizeRequestMeta(domain.RequestMeta{ClientIP: ip, UserAgent: r.UserAgent(), DeviceID: r.Header.Get("X-Device-ID")})
+	return domain.NormalizeRequestMeta(domain.RequestMeta{ClientIP: ip, UserAgent: r.UserAgent()})
 }
 
 func (e *Endpoint) cookie(token string, expires time.Time, clear bool) string {
@@ -288,6 +302,8 @@ func mapError(err error, login bool) error {
 		return huma.Error401Unauthorized("unauthorized")
 	case errors.Is(err, domain.ErrForbidden):
 		return huma.Error403Forbidden("forbidden")
+	case errors.Is(err, domain.ErrRateLimited):
+		return huma.Error429TooManyRequests("too many login attempts")
 	case errors.Is(err, domain.ErrDisabled):
 		return huma.Error403Forbidden("user is disabled")
 	case errors.Is(err, domain.ErrNotFound):

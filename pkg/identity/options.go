@@ -120,23 +120,31 @@ type HTTPOptions struct {
 	// ChallengeProvider enables the public challenge endpoints. When
 	// RequireChallenge is true, login and registration require a valid
 	// response from this provider.
-	ChallengeProvider HumanChallengeProvider
+	ChallengeProvider HumanChallengeVerifier
+	ChallengeCreator  HumanChallengeCreator
 	RequireChallenge  bool
 }
 
 type Options struct {
-	DB                *bun.DB
-	Clock             Clock
-	UsernamePolicy    UsernamePolicy
-	Password          PasswordOptions
-	Session           SessionOptions
-	Authorization     AuthorizationOptions
-	HTTP              HTTPOptions
-	Authorizer        Authorizer
-	BeforeDeleteUsers UserDeleteHook
+	DB             *bun.DB
+	Clock          Clock
+	UsernamePolicy UsernamePolicy
+	Password       PasswordOptions
+	Session        SessionOptions
+	Authorization  AuthorizationOptions
+	HTTP           HTTPOptions
+	Authorizer     Authorizer
+	LoginGuard     LoginGuard
+	Events         EventSink
+	// DeleteParticipant removes host-owned records in the same Bun transaction
+	// used to delete identity records. The callback must not begin a nested
+	// transaction.
+	DeleteParticipant UserDeleteParticipant
 }
 
 type Authorizer func(context.Context, *Principal, string) error
+
+type UserDeleteParticipant func(context.Context, bun.IDB, []User) error
 
 // RequestMetaResolver lets a host application derive trusted client metadata
 // (for example, an IP behind a known reverse proxy). The default resolver only

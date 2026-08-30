@@ -215,6 +215,7 @@ type PasswordService struct {
 	policy      PasswordPolicy
 	now         domain.Clock
 	username    domain.UsernamePolicy
+	dummyHash   string
 }
 
 func NewPasswordService(credentials domain.PasswordRepository, users domain.UserDirectory, options PasswordOptions, now domain.Clock, username domain.UsernamePolicy) (*PasswordService, error) {
@@ -246,7 +247,11 @@ func NewPasswordService(credentials domain.PasswordRepository, users domain.User
 	if username == nil {
 		username = domain.UsernamePolicyFunc(domain.LowerASCIIUsernamePolicy)
 	}
-	return &PasswordService{credentials: credentials, users: users, hasher: options.Hasher, policy: options.Policy, now: now, username: username}, nil
+	dummyHash, err := options.Hasher.Hash("identity-dummy-password-verification")
+	if err != nil {
+		return nil, fmt.Errorf("identity: create dummy password hash: %w", err)
+	}
+	return &PasswordService{credentials: credentials, users: users, hasher: options.Hasher, policy: options.Policy, now: now, username: username, dummyHash: dummyHash}, nil
 }
 func (s *PasswordService) Validate(username, value string) error {
 	if s == nil {
@@ -310,7 +315,12 @@ func (s *PasswordService) AuthenticateUser(ctx context.Context, id domain.UserID
 		if err != nil {
 			return err
 		}
-		if err := s.SetHash(ctx, id, hash); err != nil {
+		now := s.now().UTC()
+		_, err = s.credentials.UpdatePasswordCredentialIfMatch(ctx, id, c.Scheme, c.Hash, domain.PasswordCredential{
+			UserID: id, Scheme: s.hasher.Scheme(), Hash: hash,
+			PasswordChangedAt: c.PasswordChangedAt, CreatedAt: c.CreatedAt, UpdatedAt: now,
+		})
+		if err != nil {
 			return err
 		}
 	}
@@ -373,6 +383,7 @@ func (s *PasswordService) Authenticate(ctx context.Context, username, value stri
 	u, e := s.users.UserByUsername(ctx, norm)
 	if e != nil {
 		if errors.Is(e, domain.ErrNotFound) {
+			_ = s.hasher.Verify(s.dummyHash, value)
 			return nil, domain.ErrUnauthenticated
 		}
 		return nil, e
