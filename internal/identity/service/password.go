@@ -214,11 +214,10 @@ type PasswordService struct {
 	hasher      PasswordHasher
 	policy      PasswordPolicy
 	now         domain.Clock
-	username    domain.UsernamePolicy
 	dummyHash   string
 }
 
-func NewPasswordService(credentials domain.PasswordRepository, users domain.UserDirectory, options PasswordOptions, now domain.Clock, username domain.UsernamePolicy) (*PasswordService, error) {
+func NewPasswordService(credentials domain.PasswordRepository, users domain.UserDirectory, options PasswordOptions, now domain.Clock) (*PasswordService, error) {
 	if credentials == nil {
 		return nil, errors.New("identity: password repository is required")
 	}
@@ -230,7 +229,7 @@ func NewPasswordService(credentials domain.PasswordRepository, users domain.User
 		options.Hasher = h
 	}
 	if options.Policy == (PasswordPolicy{}) {
-		options.Policy = PasswordPolicy{MinLength: 12, MaxLength: 128, RejectUsername: true, RejectCommon: true}
+		options.Policy = PasswordPolicy{MinLength: 12, MaxLength: 128, RejectLoginIdentifier: true, RejectCommon: true}
 	}
 	if options.Policy.MinLength < 1 {
 		options.Policy.MinLength = 12
@@ -244,16 +243,13 @@ func NewPasswordService(credentials domain.PasswordRepository, users domain.User
 	if now == nil {
 		now = func() time.Time { return time.Now().UTC() }
 	}
-	if username == nil {
-		username = domain.UsernamePolicyFunc(domain.LowerASCIIUsernamePolicy)
-	}
 	dummyHash, err := options.Hasher.Hash("identity-dummy-password-verification")
 	if err != nil {
 		return nil, fmt.Errorf("identity: create dummy password hash: %w", err)
 	}
-	return &PasswordService{credentials: credentials, users: users, hasher: options.Hasher, policy: options.Policy, now: now, username: username, dummyHash: dummyHash}, nil
+	return &PasswordService{credentials: credentials, users: users, hasher: options.Hasher, policy: options.Policy, now: now, dummyHash: dummyHash}, nil
 }
-func (s *PasswordService) Validate(username, value string) error {
+func (s *PasswordService) ValidateIdentifiers(identifiers []string, value string) error {
 	if s == nil {
 		return errors.New("identity: password service is not configured")
 	}
@@ -277,20 +273,17 @@ func (s *PasswordService) Validate(username, value string) error {
 	if s.policy.RequireUpper && !upper || s.policy.RequireLower && !lower || s.policy.RequireDigit && !digit || s.policy.RequireSymbol && !symbol {
 		return domain.ErrWeakPassword
 	}
-	if s.policy.RejectUsername && username != "" && strings.EqualFold(strings.TrimSpace(username), strings.TrimSpace(value)) {
-		return domain.ErrWeakPassword
+	if s.policy.RejectLoginIdentifier {
+		for _, identifier := range identifiers {
+			if identifier != "" && strings.EqualFold(strings.TrimSpace(identifier), strings.TrimSpace(value)) {
+				return domain.ErrWeakPassword
+			}
+		}
 	}
 	if s.policy.RejectCommon && isCommon(value) {
 		return domain.ErrWeakPassword
 	}
 	return nil
-}
-
-func (s *PasswordService) NormalizeUsername(value string) (string, error) {
-	if s == nil || s.username == nil {
-		return "", domain.ErrInvalidUsername
-	}
-	return s.username.Normalize(value)
 }
 
 func (s *PasswordService) verifyDummy(value string) {
@@ -371,8 +364,8 @@ func (s *PasswordService) needsCredentialRehash(c *domain.PasswordCredential) bo
 	rehasher, ok := s.hasher.(PasswordHasherRehash)
 	return ok && rehasher.NeedsRehash(c.Hash)
 }
-func (s *PasswordService) Set(ctx context.Context, id domain.UserID, username, value string) error {
-	if e := s.Validate(username, value); e != nil {
+func (s *PasswordService) Set(ctx context.Context, id domain.UserID, identifiers []string, value string) error {
+	if e := s.ValidateIdentifiers(identifiers, value); e != nil {
 		return e
 	}
 	h, e := s.Hash(value)
@@ -390,16 +383,16 @@ func (s *PasswordService) SetHash(ctx context.Context, id domain.UserID, hash st
 	now := s.now().UTC()
 	return s.credentials.UpsertPasswordCredential(ctx, domain.PasswordCredential{UserID: id, Scheme: s.hasher.Scheme(), Hash: hash, PasswordChangedAt: now, CreatedAt: now, UpdatedAt: now})
 }
-func (s *PasswordService) Authenticate(ctx context.Context, username, value string) (*domain.User, error) {
+func (s *PasswordService) Authenticate(ctx context.Context, identifierValue, value string) (*domain.User, error) {
 	if s.users == nil {
 		return nil, errors.New("identity: user directory is required")
 	}
-	norm, e := s.username.Normalize(username)
+	identifier, e := domain.NormalizeLoginIdentifier(identifierValue)
 	if e != nil {
 		s.verifyDummy(value)
 		return nil, domain.ErrUnauthenticated
 	}
-	u, e := s.users.UserByUsername(ctx, norm)
+	u, e := s.users.UserByLoginIdentifier(ctx, identifier)
 	if e != nil {
 		if errors.Is(e, domain.ErrNotFound) {
 			_ = s.hasher.Verify(s.dummyHash, value)

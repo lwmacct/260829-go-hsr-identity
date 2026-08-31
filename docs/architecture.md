@@ -33,8 +33,15 @@ transaction to a writer lock.
 
 - Passwords use Argon2id and are never stored in plaintext.
 - Session tokens are random opaque values; only SHA-256 hashes are stored.
-- Login failures do not reveal whether a username exists.
+- Login failures do not reveal whether a login identifier exists.
 - Successful password and external logins update `last_login_at` in the same transaction that creates the Session.
 - Disabling a user revokes sessions.
 - Password changes and resets revoke old sessions.
 - Role and permission changes take effect on the next Session resolution; permissions are not snapshotted into a Session.
+- Usernames are fixed lowercase ASCII values matching the identifier format; phone
+  numbers are stored in E.164 form and emails are stored in lowercase canonical
+  form.
+- Username, phone, and email have independent unique database indexes. Login
+  resolves the input identifier type first and performs one indexed lookup.
+- Phone and email fields are login identifiers only; their ownership is not
+  considered verified without an explicit host-owned verification flow.

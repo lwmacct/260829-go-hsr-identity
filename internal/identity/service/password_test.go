@@ -145,7 +145,7 @@ func TestPasswordUpgradeDoesNotOverwriteConcurrentReset(t *testing.T) {
 	}
 	passwords, err := NewPasswordService(repository, nil, PasswordOptions{Hasher: chain, Policy: PasswordPolicy{MinLength: 8}}, func() time.Time {
 		return now.Add(2 * time.Minute)
-	}, domain.UsernamePolicyFunc(domain.LowerASCIIUsernamePolicy))
+	})
 	if err != nil {
 		t.Fatal(err)
 	}

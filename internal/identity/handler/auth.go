@@ -9,12 +9,20 @@ import (
 	"github.com/lwmacct/260829-go-hsr-identity/pkg/identity/domain"
 )
 
-type credentialsBody struct {
+type registrationBody struct {
 	Challenge *challengeBody `json:"challenge,omitempty"`
 	Username  string         `json:"username" minLength:"1"`
+	Phone     string         `json:"phone,omitempty"`
+	Email     string         `json:"email,omitempty"`
 	Password  string         `json:"password" minLength:"1"`
 }
-type credentialsInput struct{ Body credentialsBody }
+type registrationInput struct{ Body registrationBody }
+type loginBody struct {
+	Challenge  *challengeBody `json:"challenge,omitempty"`
+	Identifier string         `json:"identifier" minLength:"1"`
+	Password   string         `json:"password" minLength:"1"`
+}
+type loginInput struct{ Body loginBody }
 type passwordBody struct {
 	CurrentPassword string `json:"currentPassword" minLength:"1"`
 	NewPassword     string `json:"newPassword" minLength:"1"`
@@ -65,7 +73,7 @@ type sessionPathInput struct {
 // to be omitted by Huma's JSON encoder.
 type timeValue = time.Time
 
-func (e *Endpoint) register(ctx context.Context, input *credentialsInput) (*sessionResponse, error) {
+func (e *Endpoint) register(ctx context.Context, input *registrationInput) (*sessionResponse, error) {
 	if !e.config.RegistrationEnabled {
 		return nil, huma.Error403Forbidden("registration is disabled")
 	}
@@ -75,7 +83,11 @@ func (e *Endpoint) register(ctx context.Context, input *credentialsInput) (*sess
 	if err := e.verifyChallenge(ctx, input.Body.Challenge, e.config.RequireChallengeOnRegistration); err != nil {
 		return nil, mapError(err, false)
 	}
-	_, issued, err := e.services.Accounts.RegisterAndLogin(ctx, domain.UserCreateInput{Username: input.Body.Username}, input.Body.Password, requestMetaFromContext(ctx))
+	_, issued, err := e.services.Accounts.RegisterAndLogin(ctx, domain.UserCreateInput{
+		Username: input.Body.Username,
+		Phone:    input.Body.Phone,
+		Email:    input.Body.Email,
+	}, input.Body.Password, requestMetaFromContext(ctx))
 	if err != nil {
 		return nil, mapError(err, false)
 	}
@@ -86,7 +98,7 @@ func (e *Endpoint) register(ctx context.Context, input *credentialsInput) (*sess
 	return &sessionResponse{SetCookie: e.cookie(issued.Token, issued.Session.ExpiresAt, false), Body: sessionViewFromPrincipal(principal)}, nil
 }
 
-func (e *Endpoint) login(ctx context.Context, input *credentialsInput) (*sessionResponse, error) {
+func (e *Endpoint) login(ctx context.Context, input *loginInput) (*sessionResponse, error) {
 	if !e.config.LoginEnabled {
 		return nil, huma.Error403Forbidden("login is disabled")
 	}
@@ -96,7 +108,7 @@ func (e *Endpoint) login(ctx context.Context, input *credentialsInput) (*session
 	if err := e.verifyChallenge(ctx, input.Body.Challenge, e.config.RequireChallengeOnLogin); err != nil {
 		return nil, mapError(err, true)
 	}
-	_, issued, err := e.services.Accounts.Login(ctx, input.Body.Username, input.Body.Password, requestMetaFromContext(ctx))
+	_, issued, err := e.services.Accounts.Login(ctx, input.Body.Identifier, input.Body.Password, requestMetaFromContext(ctx))
 	if err != nil {
 		return nil, mapError(err, true)
 	}

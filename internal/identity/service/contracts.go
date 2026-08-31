@@ -9,14 +9,14 @@ import (
 )
 
 type PasswordPolicy struct {
-	MinLength      int
-	MaxLength      int
-	RequireUpper   bool
-	RequireLower   bool
-	RequireDigit   bool
-	RequireSymbol  bool
-	RejectUsername bool
-	RejectCommon   bool
+	MinLength             int
+	MaxLength             int
+	RequireUpper          bool
+	RequireLower          bool
+	RequireDigit          bool
+	RequireSymbol         bool
+	RejectLoginIdentifier bool
+	RejectCommon          bool
 }
 
 type PasswordHasher interface {

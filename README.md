@@ -70,9 +70,15 @@ Events: identity.EventSinkFunc(func(ctx context.Context, event identity.Event) {
 ## 公共能力
 
 ```go
-user, err := mod.RegisterUser(ctx, identity.UserCreateInput{Username: "alice"}, password)
+user, err := mod.RegisterUser(ctx, identity.UserCreateInput{
+    Username: "alice",
+    Phone:    "+8613812345678",
+    Email:    "alice@example.com",
+}, password)
 user, err = mod.Authenticate(ctx, "alice", password)
 user, issued, err := mod.Login(ctx, "alice", password, identity.RequestMeta{ClientIP: "203.0.113.10"})
+user, issued, err = mod.Login(ctx, "+8613812345678", password, identity.RequestMeta{ClientIP: "203.0.113.10"})
+user, issued, err = mod.Login(ctx, "alice@example.com", password, identity.RequestMeta{ClientIP: "203.0.113.10"})
 principal, err := mod.ResolveSession(ctx, issued.Token, identity.RequestMeta{ClientIP: "203.0.113.10"})
 
 // Trusted host-side provisioning with explicit roles:
@@ -90,6 +96,7 @@ role, err := mod.EnsureRole(ctx, identity.RoleInput{Code: "admin", Name: "Admini
 permission, err := mod.EnsurePermission(ctx, identity.PermissionInput{Code: "relay.api_key.manage", Name: "Manage API keys"})
 err = mod.SetRolePermissions(ctx, role.ID, []string{permission.Code})
 err = mod.SetUserRoles(ctx, user.ID, []string{role.Code})
+```
 
 `ProvisionUser` creates the account, password and explicit role bindings in
 one transaction and can be used repeatedly by trusted host-side administration.
@@ -100,6 +107,11 @@ active sessions.
 用于宿主已经完成 OAuth/SSH 等外部凭据校验的场景，同样会记录
 `last_login_at`。用户和 Session ID 固定为 UUIDv7，直接调用 Go 1.27 标准库
 `uuid.NewV7()` 生成；不提供自定义 ID 生成器。
+
+登录统一使用 `identifier`，支持用户名、手机号和邮箱。用户名必须是
+1-64 个小写 ASCII 字符，格式为 `^[a-z]([a-z0-9_-]*[a-z0-9])?$`；
+手机号保存为带国家码的 E.164 形式；邮箱保存为去除首尾空白并转小写后的
+规范值。三个字段分别具有独立的唯一索引，手机号和邮箱可以为空。
 
 Session token 只在创建时返回，数据库只保存 SHA-256 hash。Session ID 是独立的非敏感标识。
 
@@ -120,6 +132,16 @@ PATCH /auth/password
 POST  /auth/sessions/revoke-all
 ```
 
+`POST /auth/register` 接受 `username`、可选的 `phone` 和 `email`；
+`POST /auth/login` 接受 `identifier` 和 `password`：
+
+```json
+{
+  "identifier": "alice@example.com",
+  "password": "correct horse"
+}
+```
+
 开启 `EnableAdminRoutes` 后提供 `/admin/users` 的列表、创建、查询、更新、状态切换、密码重置和删除接口。开启 `EnableRBACRoutes` 后还提供角色、权限及绑定管理接口。基础管理操作由 identity RBAC 权限控制；`Options.Authorizer` 仅用于叠加宿主的额外策略。
 
 认证中间件同时支持 Session cookie 和 `Authorization: Bearer <token>`。宿主可以通过 `HTTP.TokenExtractor` 完全替换 token 来源。
@@ -138,6 +160,18 @@ identity_permissions
 identity_user_roles
 identity_role_permissions
 ```
+
+`identity_users` 的登录字段为：
+
+```text
+id          UUIDv7 主键
+username    小写 ASCII 用户名，唯一
+phone_e164  可选的 E.164 手机号，唯一
+email       可选的规范化邮箱，唯一
+```
+
+当前方案不包含手机号验证、短信验证码或邮箱验证；这些能力需要由宿主
+在明确的验证流程中实现，不能仅根据字段存在认定联系方式已验证。
 
 不包含 `user_external_identities`，也不包含 OAuth、SSH、验证码或审计表。通用的图片和远程 token
 验证码 provider 位于 `pkg/identity/challenge`；宿主也可以分别实现 `HumanChallengeVerifier` 和可选的 `HumanChallengeCreator` 后注入。

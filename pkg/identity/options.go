@@ -44,14 +44,14 @@ type Argon2idParams struct {
 }
 
 type PasswordPolicy struct {
-	MinLength      int
-	MaxLength      int
-	RequireUpper   bool
-	RequireLower   bool
-	RequireDigit   bool
-	RequireSymbol  bool
-	RejectUsername bool
-	RejectCommon   bool
+	MinLength             int
+	MaxLength             int
+	RequireUpper          bool
+	RequireLower          bool
+	RequireDigit          bool
+	RequireSymbol         bool
+	RejectLoginIdentifier bool
+	RejectCommon          bool
 }
 
 type PasswordOptions struct {
@@ -135,16 +135,15 @@ type HTTPOptions struct {
 }
 
 type Options struct {
-	DB             *bun.DB
-	Clock          Clock
-	UsernamePolicy UsernamePolicy
-	Password       PasswordOptions
-	Session        SessionOptions
-	Authorization  AuthorizationOptions
-	HTTP           HTTPOptions
-	Authorizer     Authorizer
-	LoginGuard     LoginGuard
-	Events         EventSink
+	DB            *bun.DB
+	Clock         Clock
+	Password      PasswordOptions
+	Session       SessionOptions
+	Authorization AuthorizationOptions
+	HTTP          HTTPOptions
+	Authorizer    Authorizer
+	LoginGuard    LoginGuard
+	Events        EventSink
 	// DeleteParticipant removes host-owned records in the same Bun transaction
 	// used to delete identity records. The callback must not begin a nested
 	// transaction.
@@ -164,7 +163,7 @@ type RequestMetaResolver func(*http.Request) (RequestMeta, error)
 // for zero-valued nested options.
 func DefaultOptions() Options {
 	return Options{
-		Password: PasswordOptions{Policy: PasswordPolicy{MinLength: 12, MaxLength: 128, RejectUsername: true, RejectCommon: true}},
+		Password: PasswordOptions{Policy: PasswordPolicy{MinLength: 12, MaxLength: 128, RejectLoginIdentifier: true, RejectCommon: true}},
 		Session:  SessionOptions{TTL: 30 * 24 * time.Hour, TouchInterval: 5 * time.Minute, TokenBytes: 32, Binding: NoBinding{}},
 		HTTP:     HTTPOptions{AuthPrefix: "/auth", AdminPrefix: "/admin", LoginEnabled: true, CookieName: "identity_session", CookiePath: "/", SameSite: http.SameSiteLaxMode},
 	}

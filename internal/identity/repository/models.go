@@ -12,9 +12,9 @@ type UserModel struct {
 	bun.BaseModel `bun:"table:identity_users,alias:u"`
 	ID            string     `bun:"id,pk,type:uuid"`
 	Username      string     `bun:"username,notnull"`
-	UsernameKey   string     `bun:"username_key,notnull,unique"`
+	PhoneE164     *string    `bun:"phone_e164"`
 	DisplayName   string     `bun:"display_name,notnull"`
-	Email         string     `bun:"email,notnull"`
+	Email         *string    `bun:"email"`
 	AvatarURL     string     `bun:"avatar_url,notnull"`
 	State         string     `bun:"state,notnull"`
 	DisabledAt    *time.Time `bun:"disabled_at,nullzero"`
@@ -25,6 +25,13 @@ type UserModel struct {
 
 func (*UserModel) BeforeCreateTable(_ context.Context, query *bun.CreateTableQuery) error {
 	query.ColumnExpr("CHECK (state IN ('active', 'disabled'))")
+	if query.Dialect().Name().String() == "pg" {
+		query.ColumnExpr("CHECK (username ~ '^[a-z]([a-z0-9_-]*[a-z0-9])?$' AND length(username) BETWEEN 1 AND 64)")
+		query.ColumnExpr("CHECK (phone_e164 IS NULL OR (phone_e164 ~ '^\\+[1-9][0-9]{6,14}$'))")
+	} else {
+		query.ColumnExpr("CHECK (length(username) BETWEEN 1 AND 64 AND substr(username, 1, 1) GLOB '[a-z]' AND substr(username, length(username), 1) GLOB '[a-z0-9]' AND username NOT GLOB '*[^a-z0-9_-]*')")
+		query.ColumnExpr("CHECK (phone_e164 IS NULL OR (length(phone_e164) BETWEEN 8 AND 16 AND substr(phone_e164, 1, 1) = '+' AND substr(phone_e164, 2, 1) GLOB '[1-9]' AND substr(phone_e164, 2) NOT GLOB '*[^0-9]*'))")
+	}
 	addUUIDv7Check(query, "id")
 	return nil
 }

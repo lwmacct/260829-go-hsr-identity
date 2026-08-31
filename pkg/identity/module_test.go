@@ -18,6 +18,7 @@ import (
 	"github.com/uptrace/bun"
 	"github.com/uptrace/bun/dialect/sqlitedialect"
 	"github.com/uptrace/bun/driver/sqliteshim"
+	"uuid"
 )
 
 func testModule(t *testing.T) (*identity.Module, *bun.DB) {
@@ -33,7 +34,7 @@ func testModule(t *testing.T) (*identity.Module, *bun.DB) {
 	if err := identity.ApplySchema(context.Background(), db); err != nil {
 		t.Fatal(err)
 	}
-	m, err := identity.New(identity.Options{DB: db, Clock: func() time.Time { return time.Unix(100, 0).UTC() }, Password: identity.PasswordOptions{Policy: identity.PasswordPolicy{MinLength: 8, MaxLength: 64, RejectUsername: true}}, Session: identity.SessionOptions{Binding: identity.IPBinding{}}, HTTP: identity.HTTPOptions{LoginEnabled: true, RegistrationEnabled: true}})
+	m, err := identity.New(identity.Options{DB: db, Clock: func() time.Time { return time.Unix(100, 0).UTC() }, Password: identity.PasswordOptions{Policy: identity.PasswordPolicy{MinLength: 8, MaxLength: 64, RejectLoginIdentifier: true}}, Session: identity.SessionOptions{Binding: identity.IPBinding{}}, HTTP: identity.HTTPOptions{LoginEnabled: true, RegistrationEnabled: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -43,7 +44,7 @@ func testModule(t *testing.T) (*identity.Module, *bun.DB) {
 func TestModuleLifecycle(t *testing.T) {
 	m, db := testModule(t)
 	ctx := context.Background()
-	u, err := m.RegisterUser(ctx, identity.UserCreateInput{Username: "Alice", DisplayName: "Alice"}, "correct horse")
+	u, err := m.RegisterUser(ctx, identity.UserCreateInput{Username: "alice", DisplayName: "Alice"}, "correct horse")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -53,7 +54,7 @@ func TestModuleLifecycle(t *testing.T) {
 	if _, err := m.RegisterUser(ctx, identity.UserCreateInput{Username: "alice"}, "correct horse"); !errors.Is(err, identity.ErrUsernameTaken) && !errors.Is(err, identity.ErrConflict) {
 		t.Fatalf("duplicate username err = %v", err)
 	}
-	if _, err := m.Authenticate(ctx, "ALICE", "correct horse"); err != nil {
+	if _, err := m.Authenticate(ctx, "alice", "correct horse"); err != nil {
 		t.Fatal(err)
 	}
 	issued, err := m.CreateSession(ctx, u.ID, identity.RequestMeta{ClientIP: "127.0.0.1", UserAgent: "test"})
@@ -194,30 +195,159 @@ func TestModuleDeleteUsersRollsBackWhenDeleteParticipantFails(t *testing.T) {
 	}
 }
 
-func TestUnicodeUsernameKeyPreservesDisplayAndRejectsEquivalentDuplicate(t *testing.T) {
-	_, db := testModule(t)
-	m, err := identity.New(identity.Options{
-		DB:             db,
-		UsernamePolicy: identity.UsernamePolicyFunc(identity.TrimUsernamePolicy),
-		Password:       identity.PasswordOptions{Policy: identity.PasswordPolicy{MinLength: 8}},
+func TestLoginIdentifiersNormalizeAndRemainUnique(t *testing.T) {
+	m, _ := testModule(t)
+	ctx := context.Background()
+	user, err := m.RegisterUser(ctx, identity.UserCreateInput{
+		Username: "elodie",
+		Phone:    "+8613812345678",
+		Email:    "Elodie@Example.com",
+	}, "correct horse")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if user.Username != "elodie" || user.Phone != "+8613812345678" || user.Email != "elodie@example.com" {
+		t.Fatalf("stored identifiers = %#v", user)
+	}
+	for _, identifier := range []string{"elodie", "+8613812345678", "ELODIE@EXAMPLE.COM"} {
+		found, err := m.UserByLoginIdentifier(ctx, identifier)
+		if err != nil || found.ID != user.ID {
+			t.Fatalf("identifier %q lookup user=%#v err=%v", identifier, found, err)
+		}
+		if _, _, err := m.Login(ctx, identifier, "correct horse", identity.RequestMeta{ClientIP: "127.0.0.1"}); err != nil {
+			t.Fatalf("identifier %q login error = %v", identifier, err)
+		}
+	}
+	duplicates := []struct {
+		identifier string
+		wantErr    error
+	}{
+		{"elodie", identity.ErrUsernameTaken},
+		{"+8613812345678", identity.ErrPhoneTaken},
+		{"elodie@example.com", identity.ErrEmailTaken},
+	}
+	for _, duplicate := range duplicates {
+		identifier := duplicate.identifier
+		input := identity.UserCreateInput{Username: "other-user"}
+		switch identifier[0] {
+		case '+':
+			input.Phone = identifier
+		case 'e':
+			if strings.Contains(identifier, "@") {
+				input.Email = identifier
+			} else {
+				input.Username = identifier
+			}
+		}
+		if _, err := m.RegisterUser(ctx, input, "another horse"); !errors.Is(err, duplicate.wantErr) {
+			t.Fatalf("duplicate identifier %q error = %v, want %v", identifier, err, duplicate.wantErr)
+		}
+	}
+	emptyContact, err := m.RegisterUser(ctx, identity.UserCreateInput{Username: "no-contact"}, "another horse")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if emptyContact.Phone != "" || emptyContact.Email != "" {
+		t.Fatalf("empty contact values = %#v", emptyContact)
+	}
+	emptyContact2, err := m.RegisterUser(ctx, identity.UserCreateInput{Username: "no-contact-2"}, "another horse")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if emptyContact2.Phone != "" || emptyContact2.Email != "" {
+		t.Fatalf("second empty contact values = %#v", emptyContact2)
+	}
+	phone := "+14155552671"
+	email := "no-contact@example.com"
+	avatar := "https://example.test/avatar.png"
+	updated, err := m.UpdateUserProfile(ctx, emptyContact.ID, identity.UserUpdateProfileInput{
+		DisplayName: "No Contact Updated",
+		Phone:       &phone,
+		Email:       &email,
+		AvatarURL:   &avatar,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx := context.Background()
-	user, err := m.RegisterUser(ctx, identity.UserCreateInput{Username: "Élodie"}, "correct horse")
+	if updated.Phone != phone || updated.Email != email || updated.AvatarURL != avatar {
+		t.Fatalf("updated contact values = %#v", updated)
+	}
+	updated, err = m.UpdateUserProfile(ctx, emptyContact.ID, identity.UserUpdateProfileInput{DisplayName: "Display Only"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if user.Username != "Élodie" {
-		t.Fatalf("stored username = %q", user.Username)
+	if updated.Phone != phone || updated.Email != email || updated.AvatarURL != avatar {
+		t.Fatalf("display-only update cleared identifiers = %#v", updated)
 	}
-	found, err := m.UserByUsername(ctx, "E\u0301LODIE")
-	if err != nil || found.ID != user.ID {
-		t.Fatalf("canonical lookup user=%#v err=%v", found, err)
+	clear := ""
+	updated, err = m.UpdateUserProfile(ctx, emptyContact.ID, identity.UserUpdateProfileInput{
+		DisplayName: "Contacts Cleared",
+		Phone:       &clear,
+		Email:       &clear,
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
-	if _, err := m.RegisterUser(ctx, identity.UserCreateInput{Username: "E\u0301LODIE"}, "another horse"); !errors.Is(err, identity.ErrUsernameTaken) && !errors.Is(err, identity.ErrConflict) {
-		t.Fatalf("equivalent username error = %v", err)
+	if updated.Phone != "" || updated.Email != "" {
+		t.Fatalf("cleared contact values = %#v", updated)
+	}
+	if _, err := m.RegisterUser(ctx, identity.UserCreateInput{Username: "contact-password", Phone: "+14155552671"}, "+14155552671"); !errors.Is(err, identity.ErrWeakPassword) {
+		t.Fatalf("phone-as-password error = %v", err)
+	}
+	if _, err := m.RegisterUser(ctx, identity.UserCreateInput{Username: "email-password", Email: "password@example.com"}, "password@example.com"); !errors.Is(err, identity.ErrWeakPassword) {
+		t.Fatalf("email-as-password error = %v", err)
+	}
+}
+
+func TestUsernameAndContactNormalizationRules(t *testing.T) {
+	valid := []string{"a", "alice", "a1", "a_b", "a-b"}
+	for _, value := range valid {
+		got, err := identity.NormalizeUsername(value)
+		if err != nil || got != value {
+			t.Fatalf("NormalizeUsername(%q) = %q, %v", value, got, err)
+		}
+	}
+	for _, value := range []string{"", "1alice", "_alice", "alice_", "alice-", "Alice", "alice!"} {
+		if _, err := identity.NormalizeUsername(value); !errors.Is(err, identity.ErrInvalidUsername) {
+			t.Fatalf("NormalizeUsername(%q) error = %v", value, err)
+		}
+	}
+	for _, value := range []string{"+8613812345678", "+14155552671"} {
+		if got, err := identity.NormalizePhone(value); err != nil || got != value {
+			t.Fatalf("NormalizePhone(%q) = %q, %v", value, got, err)
+		}
+	}
+	for _, value := range []string{"13800138000", "+86 13800138000", "+01234567"} {
+		if _, err := identity.NormalizePhone(value); !errors.Is(err, identity.ErrInvalidPhone) {
+			t.Fatalf("NormalizePhone(%q) error = %v", value, err)
+		}
+	}
+	if got, err := identity.NormalizeEmail(" Alice@Example.com "); err != nil || got != "alice@example.com" {
+		t.Fatalf("NormalizeEmail = %q, %v", got, err)
+	}
+}
+
+func TestSQLiteDatabaseChecksRejectInvalidUsernameAndPhone(t *testing.T) {
+	_, db := testModule(t)
+	ctx := context.Background()
+	now := time.Unix(100, 0).UTC()
+	for i, username := range []string{"1alice", "_alice", "alice_", "Alice", "alice!"} {
+		_, err := db.NewRaw(
+			"INSERT INTO identity_users (id, username, display_name, avatar_url, state, created_at, updated_at) VALUES (?, ?, ?, '', 'active', ?, ?)",
+			uuid.NewV7().String(), username, username, now, now,
+		).Exec(ctx)
+		if err == nil {
+			t.Fatalf("database accepted invalid username %q at case %d", username, i)
+		}
+	}
+	for _, phone := range []string{"13800138000", "+86 13800138000", "+01234567", "+1234567x"} {
+		_, err := db.NewRaw(
+			"INSERT INTO identity_users (id, username, phone_e164, display_name, avatar_url, state, created_at, updated_at) VALUES (?, ?, ?, ?, '', 'active', ?, ?)",
+			uuid.NewV7().String(), "phone-check-"+strings.ReplaceAll(phone, "+", "p"), phone, phone, now, now,
+		).Exec(ctx)
+		if err == nil {
+			t.Fatalf("database accepted invalid phone %q", phone)
+		}
 	}
 }
 
@@ -336,15 +466,21 @@ func TestResetPasswordRevokesSessions(t *testing.T) {
 	}
 }
 
-func TestResetPasswordUsesStoredUsernamePolicy(t *testing.T) {
+func TestResetPasswordRejectsStoredLoginIdentifiers(t *testing.T) {
 	m, _ := testModule(t)
 	ctx := context.Background()
-	u, err := m.RegisterUser(ctx, identity.UserCreateInput{Username: "same-as-password"}, "correct horse")
+	u, err := m.RegisterUser(ctx, identity.UserCreateInput{Username: "same-as-password", Phone: "+14155552671", Email: "same@example.com"}, "correct horse")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := m.ResetPassword(ctx, u.ID, u.Username); !errors.Is(err, identity.ErrWeakPassword) {
-		t.Fatalf("reset password equal to username = %v", err)
+		t.Fatalf("reset password equal to username error = %v", err)
+	}
+	if err := m.ResetPassword(ctx, u.ID, u.Phone); !errors.Is(err, identity.ErrWeakPassword) {
+		t.Fatalf("reset password equal to phone error = %v", err)
+	}
+	if err := m.ResetPassword(ctx, u.ID, u.Email); !errors.Is(err, identity.ErrWeakPassword) {
+		t.Fatalf("reset password equal to email error = %v", err)
 	}
 }
 
@@ -370,8 +506,8 @@ func TestSQLiteSchemaRejectsMalformedAndNonV7IDs(t *testing.T) {
 	}
 	for _, id := range cases {
 		_, err := db.NewRaw(
-			"INSERT INTO identity_users (id, username, username_key, display_name, email, avatar_url, state, created_at, updated_at) VALUES (?, ?, ?, ?, '', '', 'active', ?, ?)",
-			id, id, id, id, now, now,
+			"INSERT INTO identity_users (id, username, display_name, avatar_url, state, created_at, updated_at) VALUES (?, 'invalid-user', 'invalid-user', '', 'active', ?, ?)",
+			id, now, now,
 		).Exec(ctx)
 		if err == nil {
 			t.Fatalf("invalid UUIDv7 %q was accepted", id)
@@ -426,7 +562,7 @@ func TestHumaRoutes(t *testing.T) {
 	mux := http.NewServeMux()
 	api := humago.New(mux, huma.DefaultConfig("test", "1.0.0"))
 	m.Register(api)
-	body := `{"username":"alice","password":"correct horse"}`
+	body := `{"username":"alice","phone":"+14155552671","email":"alice@example.com","password":"correct horse"}`
 	req := httptest.NewRequest(http.MethodPost, "/auth/register", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	res := httptest.NewRecorder()
@@ -451,6 +587,14 @@ func TestHumaRoutes(t *testing.T) {
 	mux.ServeHTTP(protectedRes, protected)
 	if protectedRes.Code != http.StatusOK {
 		t.Fatalf("session status = %d body = %s", protectedRes.Code, protectedRes.Body.String())
+	}
+
+	loginReq := httptest.NewRequest(http.MethodPost, "/auth/login", strings.NewReader(`{"identifier":"ALICE@EXAMPLE.COM","password":"correct horse"}`))
+	loginReq.Header.Set("Content-Type", "application/json")
+	loginRes := httptest.NewRecorder()
+	mux.ServeHTTP(loginRes, loginReq)
+	if loginRes.Code != http.StatusOK {
+		t.Fatalf("email login status = %d body = %s", loginRes.Code, loginRes.Body.String())
 	}
 
 	unauth := httptest.NewRequest(http.MethodGet, "/auth/session", nil)
@@ -548,7 +692,7 @@ func TestLoginCanBeDisabledAtHTTPBoundary(t *testing.T) {
 	mux := http.NewServeMux()
 	api := humago.New(mux, huma.DefaultConfig("test", "1.0.0"))
 	m.Register(api)
-	req := httptest.NewRequest(http.MethodPost, "/auth/login", strings.NewReader(`{"username":"nobody","password":"correct horse"}`))
+	req := httptest.NewRequest(http.MethodPost, "/auth/login", strings.NewReader(`{"identifier":"nobody","password":"correct horse"}`))
 	req.Header.Set("Content-Type", "application/json")
 	res := httptest.NewRecorder()
 	mux.ServeHTTP(res, req)
@@ -801,13 +945,13 @@ func TestLoginGuardRecordsCredentialOutcomes(t *testing.T) {
 	if _, _, err := m.Login(ctx, "guard-user", "wrong horse", identity.RequestMeta{}); !errors.Is(err, identity.ErrUnauthenticated) {
 		t.Fatalf("failed login error = %v", err)
 	}
-	if _, _, err := m.Login(ctx, "GUARD-USER", "correct horse", identity.RequestMeta{}); err != nil {
+	if _, _, err := m.Login(ctx, "guard-user", "correct horse", identity.RequestMeta{}); err != nil {
 		t.Fatal(err)
 	}
 	if guard.allowed != 2 || len(guard.records) != 2 || guard.records[0] || !guard.records[1] {
 		t.Fatalf("guard allowed=%d records=%v", guard.allowed, guard.records)
 	}
-	if len(guard.attempts) != 2 || guard.attempts[0].UsernameKey != guard.attempts[1].UsernameKey {
+	if len(guard.attempts) != 2 || guard.attempts[0].IdentifierType != identity.LoginIdentifierUsername || guard.attempts[0].IdentifierKey != guard.attempts[1].IdentifierKey {
 		t.Fatalf("guard attempts = %#v", guard.attempts)
 	}
 }
@@ -882,7 +1026,7 @@ func TestAdminAuthorizerAndResetPolicy(t *testing.T) {
 	var actions []string
 	m, err := identity.New(identity.Options{
 		DB:       db,
-		Password: identity.PasswordOptions{Policy: identity.PasswordPolicy{MinLength: 8, RejectUsername: true}},
+		Password: identity.PasswordOptions{Policy: identity.PasswordPolicy{MinLength: 8, RejectLoginIdentifier: true}},
 		HTTP:     identity.HTTPOptions{EnableAdminRoutes: true},
 		Authorizer: func(_ context.Context, _ *identity.Principal, action string) error {
 			actions = append(actions, action)

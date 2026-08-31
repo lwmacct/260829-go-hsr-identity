@@ -17,6 +17,8 @@ type EventSink = domain.EventSink
 type EventSinkFunc = domain.EventSinkFunc
 type LoginGuard = domain.LoginGuard
 type LoginAttempt = domain.LoginAttempt
+type LoginIdentifierKind = domain.LoginIdentifierKind
+type LoginIdentifier = domain.LoginIdentifier
 type UserCreate = domain.UserCreate
 type UserProfilePatch = domain.UserProfilePatch
 type UserFilter = domain.UserFilter
@@ -37,8 +39,6 @@ type UserDirectory = domain.UserDirectory
 type SessionResolver = domain.SessionResolver
 type ClaimsResolver = domain.ClaimsResolver
 type Clock = domain.Clock
-type UsernamePolicy = domain.UsernamePolicy
-type UsernamePolicyFunc = domain.UsernamePolicyFunc
 type ValidationError = domain.ValidationError
 type HumanChallengeConfig = domain.HumanChallengeConfig
 type HumanChallenge = domain.HumanChallenge
@@ -96,6 +96,11 @@ var (
 	ErrConflict                    = domain.ErrConflict
 	ErrInvalidUsername             = domain.ErrInvalidUsername
 	ErrUsernameTaken               = domain.ErrUsernameTaken
+	ErrInvalidPhone                = domain.ErrInvalidPhone
+	ErrPhoneTaken                  = domain.ErrPhoneTaken
+	ErrInvalidEmail                = domain.ErrInvalidEmail
+	ErrEmailTaken                  = domain.ErrEmailTaken
+	ErrInvalidIdentifier           = domain.ErrInvalidIdentifier
 	ErrInvalidUser                 = domain.ErrInvalidUser
 	ErrDisabled                    = domain.ErrDisabled
 	ErrEmptySelection              = domain.ErrEmptySelection
@@ -115,21 +120,32 @@ var (
 	ErrHumanChallengeLimitExceeded = domain.ErrHumanChallengeLimitExceeded
 )
 
-var LowerASCIIUsernamePolicy = domain.LowerASCIIUsernamePolicy
-var TrimUsernamePolicy = domain.TrimUsernamePolicy
-var NormalizeUserID = domain.NormalizeUserID
-var NormalizeSessionID = domain.NormalizeSessionID
-var ValidateUserID = domain.ValidateUserID
-var ParseUserID = domain.ParseUserID
-var ParseRoleID = domain.ParseRoleID
-var ParsePermissionID = domain.ParsePermissionID
-var ValidateSessionID = domain.ValidateSessionID
-var ParseSessionID = domain.ParseSessionID
-var NormalizeRoleID = domain.NormalizeRoleID
-var NormalizePermissionID = domain.NormalizePermissionID
-var ValidateRoleID = domain.ValidateRoleID
-var ValidatePermissionID = domain.ValidatePermissionID
-var NormalizeRequestMeta = domain.NormalizeRequestMeta
-var ContextWithPrincipal = domain.ContextWithPrincipal
-var PrincipalFromContext = domain.PrincipalFromContext
-var DirectoryFromRepository = domain.DirectoryFromRepository
+const (
+	LoginIdentifierUsername = domain.LoginIdentifierUsername
+	LoginIdentifierPhone    = domain.LoginIdentifierPhone
+	LoginIdentifierEmail    = domain.LoginIdentifierEmail
+)
+
+var (
+	NormalizeUsername        = domain.NormalizeUsername
+	NormalizePhone           = domain.NormalizePhone
+	NormalizeEmail           = domain.NormalizeEmail
+	NormalizeLoginIdentifier = domain.NormalizeLoginIdentifier
+	ValidateLoginIdentifier  = domain.ValidateLoginIdentifier
+	NormalizeUserID          = domain.NormalizeUserID
+	NormalizeSessionID       = domain.NormalizeSessionID
+	ValidateUserID           = domain.ValidateUserID
+	ParseUserID              = domain.ParseUserID
+	ParseRoleID              = domain.ParseRoleID
+	ParsePermissionID        = domain.ParsePermissionID
+	ValidateSessionID        = domain.ValidateSessionID
+	ParseSessionID           = domain.ParseSessionID
+	NormalizeRoleID          = domain.NormalizeRoleID
+	NormalizePermissionID    = domain.NormalizePermissionID
+	ValidateRoleID           = domain.ValidateRoleID
+	ValidatePermissionID     = domain.ValidatePermissionID
+	NormalizeRequestMeta     = domain.NormalizeRequestMeta
+	ContextWithPrincipal     = domain.ContextWithPrincipal
+	PrincipalFromContext     = domain.PrincipalFromContext
+	DirectoryFromRepository  = domain.DirectoryFromRepository
+)

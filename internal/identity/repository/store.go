@@ -55,9 +55,20 @@ func (s *Store) CreateUser(ctx context.Context, in domain.UserCreate) (*domain.U
 		return nil, err
 	}
 	in.ID = id
-	m := &UserModel{ID: in.ID.String(), Username: in.Username, UsernameKey: in.UsernameKey, DisplayName: in.DisplayName, Email: in.Email, AvatarURL: in.AvatarURL, State: string(in.State), DisabledAt: in.DisabledAt, CreatedAt: in.CreatedAt, UpdatedAt: in.UpdatedAt}
+	m := &UserModel{
+		ID:          in.ID.String(),
+		Username:    in.Username,
+		PhoneE164:   optionalString(in.Phone),
+		DisplayName: in.DisplayName,
+		Email:       optionalString(in.Email),
+		AvatarURL:   in.AvatarURL,
+		State:       string(in.State),
+		DisabledAt:  in.DisabledAt,
+		CreatedAt:   in.CreatedAt,
+		UpdatedAt:   in.UpdatedAt,
+	}
 	if _, err := s.db.NewInsert().Model(m).Exec(ctx); err != nil {
-		return nil, mapWriteError(err, true)
+		return nil, mapUserWriteError(err)
 	}
 	return userFrom(m), nil
 }
@@ -70,9 +81,23 @@ func (s *Store) GetUser(ctx context.Context, id domain.UserID) (*domain.User, er
 	return userFrom(m), nil
 }
 
-func (s *Store) GetUserByUsernameKey(ctx context.Context, usernameKey string) (*domain.User, error) {
+func (s *Store) GetUserByLoginIdentifier(ctx context.Context, identifier domain.LoginIdentifier) (*domain.User, error) {
+	if err := domain.ValidateLoginIdentifier(identifier); err != nil {
+		return nil, err
+	}
 	m := new(UserModel)
-	if err := s.db.NewSelect().Model(m).Where("u.username_key = ?", usernameKey).Scan(ctx); err != nil {
+	query := s.db.NewSelect().Model(m)
+	switch identifier.Kind {
+	case domain.LoginIdentifierUsername:
+		query = query.Where("u.username = ?", identifier.Value)
+	case domain.LoginIdentifierPhone:
+		query = query.Where("u.phone_e164 = ?", identifier.Value)
+	case domain.LoginIdentifierEmail:
+		query = query.Where("u.email = ?", identifier.Value)
+	default:
+		return nil, domain.ErrInvalidIdentifier
+	}
+	if err := query.Scan(ctx); err != nil {
 		return nil, mapReadError(err)
 	}
 	return userFrom(m), nil
@@ -82,8 +107,8 @@ func (s *Store) UserByID(ctx context.Context, id domain.UserID) (*domain.User, e
 	return s.GetUser(ctx, id)
 }
 
-func (s *Store) UserByUsername(ctx context.Context, username string) (*domain.User, error) {
-	return s.GetUserByUsernameKey(ctx, domain.UsernameKey(username))
+func (s *Store) UserByLoginIdentifier(ctx context.Context, identifier domain.LoginIdentifier) (*domain.User, error) {
+	return s.GetUserByLoginIdentifier(ctx, identifier)
 }
 
 func (s *Store) ListUsers(ctx context.Context, filter domain.UserFilter) ([]domain.User, int, error) {
@@ -110,7 +135,7 @@ func (s *Store) ListUsers(ctx context.Context, filter domain.UserFilter) ([]doma
 func applyUserFilter(q *bun.SelectQuery, filter domain.UserFilter) *bun.SelectQuery {
 	if keyword := strings.TrimSpace(filter.Keyword); keyword != "" {
 		like := "%" + keyword + "%"
-		q = q.Where("(u.username LIKE ? OR u.display_name LIKE ? OR u.email LIKE ?)", like, like, like)
+		q = q.Where("(u.username LIKE ? OR u.phone_e164 LIKE ? OR u.display_name LIKE ? OR u.email LIKE ?)", like, like, like, like)
 	}
 	if filter.State != "" {
 		q = q.Where("u.state = ?", string(filter.State))
@@ -119,9 +144,22 @@ func applyUserFilter(q *bun.SelectQuery, filter domain.UserFilter) *bun.SelectQu
 }
 
 func (s *Store) UpdateUserProfile(ctx context.Context, id domain.UserID, p domain.UserProfilePatch) (*domain.User, error) {
-	res, err := s.db.NewUpdate().Model((*UserModel)(nil)).Set("display_name = ?", p.DisplayName).Set("email = ?", p.Email).Set("avatar_url = ?", p.AvatarURL).Set("updated_at = ?", p.UpdatedAt).Where("id = ?", id.String()).Exec(ctx)
+	query := s.db.NewUpdate().Model((*UserModel)(nil)).
+		Set("display_name = ?", p.DisplayName).
+		Set("updated_at = ?", p.UpdatedAt).
+		Where("id = ?", id.String())
+	if p.Phone != nil {
+		query = query.Set("phone_e164 = ?", nullableStringValue(p.Phone))
+	}
+	if p.Email != nil {
+		query = query.Set("email = ?", nullableStringValue(p.Email))
+	}
+	if p.AvatarURL != nil {
+		query = query.Set("avatar_url = ?", *p.AvatarURL)
+	}
+	res, err := query.Exec(ctx)
 	if err != nil {
-		return nil, mapWriteError(err, false)
+		return nil, mapUserWriteError(err)
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
 		return nil, domain.ErrNotFound
@@ -360,9 +398,49 @@ func mapWriteError(err error, username bool) error {
 	}
 	return err
 }
+
+func mapUserWriteError(err error) error {
+	lower := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(lower, "identity_users_username_uq"), strings.Contains(lower, "identity_users.username"):
+		return domain.ErrUsernameTaken
+	case strings.Contains(lower, "identity_users_phone_uq"), strings.Contains(lower, "identity_users.phone_e164"):
+		return domain.ErrPhoneTaken
+	case strings.Contains(lower, "identity_users_email_uq"), strings.Contains(lower, "identity_users.email"):
+		return domain.ErrEmailTaken
+	case strings.Contains(lower, "unique"), strings.Contains(lower, "duplicate"):
+		return domain.ErrConflict
+	case strings.Contains(lower, "foreign key"), strings.Contains(lower, "check constraint"):
+		return domain.ErrConflict
+	default:
+		return err
+	}
+}
+
 func userFrom(m *UserModel) *domain.User {
 	idRaw, _ := uuid.Parse(m.ID)
-	return &domain.User{ID: domain.UserID(idRaw), Username: m.Username, DisplayName: m.DisplayName, Email: m.Email, AvatarURL: m.AvatarURL, State: domain.State(m.State), DisabledAt: m.DisabledAt, LastLoginAt: m.LastLoginAt, CreatedAt: m.CreatedAt, UpdatedAt: m.UpdatedAt}
+	return &domain.User{ID: domain.UserID(idRaw), Username: m.Username, Phone: stringValue(m.PhoneE164), DisplayName: m.DisplayName, Email: stringValue(m.Email), AvatarURL: m.AvatarURL, State: domain.State(m.State), DisabledAt: m.DisabledAt, LastLoginAt: m.LastLoginAt, CreatedAt: m.CreatedAt, UpdatedAt: m.UpdatedAt}
+}
+
+func optionalString(value string) *string {
+	if value == "" {
+		return nil
+	}
+	return &value
+}
+
+func nullableStringValue(value *string) any {
+	if value == nil || *value == "" {
+		return nil
+	}
+	return *value
+}
+
+func stringValue(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
 }
 func sessionFrom(m *SessionModel) *domain.SessionRecord {
 	sessionIDRaw, _ := uuid.Parse(m.ID)

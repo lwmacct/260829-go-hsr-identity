@@ -12,6 +12,7 @@ import (
 type userView struct {
 	ID          string     `json:"id" format:"uuid"`
 	Username    string     `json:"username"`
+	Phone       string     `json:"phone,omitempty"`
 	DisplayName string     `json:"displayName"`
 	Email       string     `json:"email,omitempty"`
 	AvatarURL   string     `json:"avatarUrl,omitempty"`
@@ -41,8 +42,9 @@ type userListInput struct {
 }
 type userProfileBody struct {
 	DisplayName string `json:"displayName" minLength:"1"`
-	Email       string `json:"email,omitempty"`
-	AvatarURL   string `json:"avatarUrl,omitempty"`
+	Phone       *string `json:"phone,omitempty"`
+	Email       *string `json:"email,omitempty"`
+	AvatarURL   *string `json:"avatarUrl,omitempty"`
 }
 type userProfileInput struct {
 	UserID string `path:"userID" format:"uuid"`
@@ -50,6 +52,7 @@ type userProfileInput struct {
 }
 type adminCreateBody struct {
 	Username    string `json:"username" minLength:"1"`
+	Phone       string `json:"phone,omitempty"`
 	DisplayName string `json:"displayName,omitempty"`
 	Email       string `json:"email,omitempty"`
 	AvatarURL   string `json:"avatarUrl,omitempty"`
@@ -105,7 +108,7 @@ func (e *Endpoint) adminCreate(ctx context.Context, input *adminCreateInput) (*u
 		return nil, mapError(err, false)
 	}
 	b := input.Body
-	u, err := e.services.Accounts.Register(ctx, domain.UserCreateInput{Username: b.Username, DisplayName: b.DisplayName, Email: b.Email, AvatarURL: b.AvatarURL}, b.Password)
+	u, err := e.services.Accounts.Register(ctx, domain.UserCreateInput{Username: b.Username, Phone: b.Phone, DisplayName: b.DisplayName, Email: b.Email, AvatarURL: b.AvatarURL}, b.Password)
 	if err != nil {
 		return nil, mapError(err, false)
 	}
@@ -133,7 +136,7 @@ func (e *Endpoint) adminUpdate(ctx context.Context, input *userProfileInput) (*u
 	if err != nil {
 		return nil, mapError(err, false)
 	}
-	u, err := e.services.Users.UpdateProfile(ctx, id, domain.UserUpdateProfileInput{DisplayName: input.Body.DisplayName, Email: input.Body.Email, AvatarURL: input.Body.AvatarURL})
+	u, err := e.services.Users.UpdateProfile(ctx, id, domain.UserUpdateProfileInput{DisplayName: input.Body.DisplayName, Phone: input.Body.Phone, Email: input.Body.Email, AvatarURL: input.Body.AvatarURL})
 	if err != nil {
 		return nil, mapError(err, false)
 	}
@@ -187,7 +190,7 @@ func userViewFrom(u *domain.User) userView {
 	if u == nil {
 		return userView{}
 	}
-	return userView{ID: u.ID.String(), Username: u.Username, DisplayName: u.DisplayName, Email: u.Email, AvatarURL: u.AvatarURL, State: string(u.State), DisabledAt: u.DisabledAt, LastLoginAt: u.LastLoginAt, CreatedAt: u.CreatedAt, UpdatedAt: u.UpdatedAt}
+	return userView{ID: u.ID.String(), Username: u.Username, Phone: u.Phone, DisplayName: u.DisplayName, Email: u.Email, AvatarURL: u.AvatarURL, State: string(u.State), DisabledAt: u.DisabledAt, LastLoginAt: u.LastLoginAt, CreatedAt: u.CreatedAt, UpdatedAt: u.UpdatedAt}
 }
 func sessionViewFromPrincipal(p *domain.Principal) sessionView {
 	if p == nil {

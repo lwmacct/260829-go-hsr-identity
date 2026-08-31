@@ -20,23 +20,19 @@ type UserDeleteParticipant func(context.Context, bun.IDB, []domain.User) error
 type UserService struct {
 	repo              domain.UserRepository
 	tx                TxManager
-	username          domain.UsernamePolicy
 	now               domain.Clock
 	events            domain.EventSink
 	deleteParticipant UserDeleteParticipant
 }
 
-func NewUserService(repo domain.UserRepository, tx TxManager, username domain.UsernamePolicy, now domain.Clock) (*UserService, error) {
+func NewUserService(repo domain.UserRepository, tx TxManager, now domain.Clock) (*UserService, error) {
 	if repo == nil {
 		return nil, errors.New("identity: user repository is required")
-	}
-	if username == nil {
-		username = domain.UsernamePolicyFunc(domain.LowerASCIIUsernamePolicy)
 	}
 	if now == nil {
 		now = func() time.Time { return time.Now().UTC() }
 	}
-	return &UserService{repo: repo, tx: tx, username: username, now: now}, nil
+	return &UserService{repo: repo, tx: tx, now: now}, nil
 }
 
 func (s *UserService) SetDeleteParticipant(participant UserDeleteParticipant) {
@@ -52,13 +48,21 @@ func (s *UserService) SetEventSink(sink domain.EventSink) {
 }
 
 func (s *UserService) Create(ctx context.Context, in UserCreateInput) (*domain.User, error) {
-	h, e := s.username.Normalize(in.Username)
+	username, e := domain.NormalizeUsername(in.Username)
+	if e != nil {
+		return nil, e
+	}
+	phone, e := domain.NormalizePhone(in.Phone)
+	if e != nil {
+		return nil, e
+	}
+	email, e := domain.NormalizeEmail(in.Email)
 	if e != nil {
 		return nil, e
 	}
 	display := strings.TrimSpace(in.DisplayName)
 	if display == "" {
-		display = h
+		display = username
 	}
 	state := in.State
 	if state == "" {
@@ -73,14 +77,14 @@ func (s *UserService) Create(ctx context.Context, in UserCreateInput) (*domain.U
 	if state == domain.StateDisabled {
 		disabled = &now
 	}
-	user, err := s.repo.CreateUser(ctx, domain.UserCreate{ID: id, Username: h, UsernameKey: domain.UsernameKey(h), DisplayName: display, Email: strings.TrimSpace(in.Email), AvatarURL: strings.TrimSpace(in.AvatarURL), State: state, DisabledAt: disabled, CreatedAt: now, UpdatedAt: now})
+	user, err := s.repo.CreateUser(ctx, domain.UserCreate{ID: id, Username: username, Phone: phone, DisplayName: display, Email: email, AvatarURL: strings.TrimSpace(in.AvatarURL), State: state, DisabledAt: disabled, CreatedAt: now, UpdatedAt: now})
 	if err == nil {
 		emitEvent(ctx, s.events, domain.Event{Type: domain.EventUserCreated, At: now, UserID: user.ID, Username: user.Username})
 	}
 	return user, err
 }
 func (s *UserService) CreateWithUniqueUsername(ctx context.Context, in UserCreateInput) (*domain.User, error) {
-	base, e := s.username.Normalize(in.Username)
+	base, e := domain.NormalizeUsername(in.Username)
 	if e != nil {
 		return nil, e
 	}
@@ -107,11 +111,38 @@ func (s *UserService) UserByID(ctx context.Context, id domain.UserID) (*domain.U
 	return s.repo.GetUser(ctx, normalized)
 }
 func (s *UserService) UserByUsername(ctx context.Context, h string) (*domain.User, error) {
-	n, e := s.username.Normalize(h)
+	n, e := domain.NormalizeUsername(h)
 	if e != nil {
 		return nil, e
 	}
-	return s.repo.GetUserByUsernameKey(ctx, domain.UsernameKey(n))
+	return s.repo.GetUserByLoginIdentifier(ctx, domain.LoginIdentifier{Kind: domain.LoginIdentifierUsername, Value: n})
+}
+func (s *UserService) UserByPhone(ctx context.Context, phone string) (*domain.User, error) {
+	n, err := domain.NormalizePhone(phone)
+	if err != nil || n == "" {
+		if err != nil {
+			return nil, err
+		}
+		return nil, domain.ErrInvalidPhone
+	}
+	return s.repo.GetUserByLoginIdentifier(ctx, domain.LoginIdentifier{Kind: domain.LoginIdentifierPhone, Value: n})
+}
+func (s *UserService) UserByEmail(ctx context.Context, email string) (*domain.User, error) {
+	n, err := domain.NormalizeEmail(email)
+	if err != nil || n == "" {
+		if err != nil {
+			return nil, err
+		}
+		return nil, domain.ErrInvalidEmail
+	}
+	return s.repo.GetUserByLoginIdentifier(ctx, domain.LoginIdentifier{Kind: domain.LoginIdentifierEmail, Value: n})
+}
+func (s *UserService) UserByLoginIdentifier(ctx context.Context, raw string) (*domain.User, error) {
+	identifier, err := domain.NormalizeLoginIdentifier(raw)
+	if err != nil {
+		return nil, err
+	}
+	return s.repo.GetUserByLoginIdentifier(ctx, identifier)
 }
 func (s *UserService) Users(ctx context.Context, f domain.UserFilter) ([]domain.User, int, error) {
 	if f.State != "" && f.State != domain.StateActive && f.State != domain.StateDisabled {
@@ -127,7 +158,16 @@ func (s *UserService) UpdateProfile(ctx context.Context, id domain.UserID, in Us
 	if id, err = domain.NormalizeUserID(id); err != nil {
 		return nil, err
 	}
-	user, err := s.repo.UpdateUserProfile(ctx, id, domain.UserProfilePatch{DisplayName: strings.TrimSpace(in.DisplayName), Email: strings.TrimSpace(in.Email), AvatarURL: strings.TrimSpace(in.AvatarURL), UpdatedAt: s.now().UTC()})
+	phone, err := normalizeOptionalPhone(in.Phone)
+	if err != nil {
+		return nil, err
+	}
+	email, err := normalizeOptionalEmail(in.Email)
+	if err != nil {
+		return nil, err
+	}
+	avatarURL := normalizeOptionalText(in.AvatarURL)
+	user, err := s.repo.UpdateUserProfile(ctx, id, domain.UserProfilePatch{DisplayName: strings.TrimSpace(in.DisplayName), Phone: phone, Email: email, AvatarURL: avatarURL, UpdatedAt: s.now().UTC()})
 	if err == nil {
 		emitEvent(ctx, s.events, domain.Event{Type: domain.EventUserUpdated, At: user.UpdatedAt, UserID: user.ID, Username: user.Username})
 	}
@@ -266,3 +306,33 @@ func (s *UserService) EnsureActive(u *domain.User) error {
 
 type UserCreateInput = domain.UserCreateInput
 type UserUpdateProfileInput = domain.UserUpdateProfileInput
+
+func normalizeOptionalPhone(value *string) (*string, error) {
+	if value == nil {
+		return nil, nil
+	}
+	normalized, err := domain.NormalizePhone(*value)
+	if err != nil {
+		return nil, err
+	}
+	return &normalized, nil
+}
+
+func normalizeOptionalEmail(value *string) (*string, error) {
+	if value == nil {
+		return nil, nil
+	}
+	normalized, err := domain.NormalizeEmail(*value)
+	if err != nil {
+		return nil, err
+	}
+	return &normalized, nil
+}
+
+func normalizeOptionalText(value *string) *string {
+	if value == nil {
+		return nil
+	}
+	normalized := strings.TrimSpace(*value)
+	return &normalized
+}

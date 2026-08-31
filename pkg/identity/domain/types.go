@@ -4,15 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/mail"
 	"net/netip"
 	"strings"
 	"time"
-	"unicode"
-	"unicode/utf8"
 	"uuid"
-
-	"golang.org/x/text/cases"
-	"golang.org/x/text/unicode/norm"
 )
 
 // IDs are UUID values, never opaque strings. All IDs created by identity are
@@ -183,6 +179,7 @@ const (
 type User struct {
 	ID          UserID
 	Username    string
+	Phone       string
 	DisplayName string
 	Email       string
 	AvatarURL   string
@@ -249,15 +246,16 @@ const (
 // Event is a committed identity fact exposed to host audit and telemetry
 // integrations. Zero-valued IDs mean the event does not concern that entity.
 type Event struct {
-	Type         EventType
-	At           time.Time
-	UserID       UserID
-	SessionID    SessionID
-	RoleID       RoleID
-	PermissionID PermissionID
-	Username     string
-	RequestMeta  RequestMeta
-	Attributes   map[string]string
+	Type           EventType
+	At             time.Time
+	UserID         UserID
+	SessionID      SessionID
+	RoleID         RoleID
+	PermissionID   PermissionID
+	Username       string
+	IdentifierType LoginIdentifierKind
+	RequestMeta    RequestMeta
+	Attributes     map[string]string
 }
 
 // EventSink observes identity facts after the related database operation has
@@ -275,9 +273,22 @@ func (f EventSinkFunc) Record(ctx context.Context, event Event) {
 }
 
 type LoginAttempt struct {
-	Username    string
-	UsernameKey string
-	RequestMeta RequestMeta
+	IdentifierType LoginIdentifierKind
+	IdentifierKey  string
+	RequestMeta    RequestMeta
+}
+
+type LoginIdentifierKind string
+
+const (
+	LoginIdentifierUsername LoginIdentifierKind = "username"
+	LoginIdentifierPhone    LoginIdentifierKind = "phone"
+	LoginIdentifierEmail    LoginIdentifierKind = "email"
+)
+
+type LoginIdentifier struct {
+	Kind  LoginIdentifierKind
+	Value string
 }
 
 type LoginGuard interface {
@@ -288,7 +299,7 @@ type LoginGuard interface {
 type UserCreate struct {
 	ID          UserID
 	Username    string
-	UsernameKey string
+	Phone       string
 	DisplayName string
 	Email       string
 	AvatarURL   string
@@ -300,6 +311,7 @@ type UserCreate struct {
 
 type UserCreateInput struct {
 	Username    string
+	Phone       string
 	DisplayName string
 	Email       string
 	AvatarURL   string
@@ -316,14 +328,16 @@ type UserProvisionInput struct {
 
 type UserUpdateProfileInput struct {
 	DisplayName string
-	Email       string
-	AvatarURL   string
+	Phone       *string
+	Email       *string
+	AvatarURL   *string
 }
 
 type UserProfilePatch struct {
 	DisplayName string
-	Email       string
-	AvatarURL   string
+	Phone       *string
+	Email       *string
+	AvatarURL   *string
 	UpdatedAt   time.Time
 }
 
@@ -424,7 +438,7 @@ type IssuedSession struct {
 type UserRepository interface {
 	CreateUser(context.Context, UserCreate) (*User, error)
 	GetUser(context.Context, UserID) (*User, error)
-	GetUserByUsernameKey(context.Context, string) (*User, error)
+	GetUserByLoginIdentifier(context.Context, LoginIdentifier) (*User, error)
 	ListUsers(context.Context, UserFilter) ([]User, int, error)
 	UpdateUserProfile(context.Context, UserID, UserProfilePatch) (*User, error)
 	UpdateUserState(context.Context, []UserID, State, *time.Time, time.Time) (int64, error)
@@ -477,7 +491,7 @@ type AuthorizationRepository interface {
 
 type UserDirectory interface {
 	UserByID(context.Context, UserID) (*User, error)
-	UserByUsername(context.Context, string) (*User, error)
+	UserByLoginIdentifier(context.Context, LoginIdentifier) (*User, error)
 }
 
 func DirectoryFromRepository(repository UserRepository) UserDirectory {
@@ -492,8 +506,8 @@ type repositoryDirectory struct{ UserRepository }
 func (r repositoryDirectory) UserByID(ctx context.Context, id UserID) (*User, error) {
 	return r.GetUser(ctx, id)
 }
-func (r repositoryDirectory) UserByUsername(ctx context.Context, username string) (*User, error) {
-	return r.GetUserByUsernameKey(ctx, UsernameKey(username))
+func (r repositoryDirectory) UserByLoginIdentifier(ctx context.Context, identifier LoginIdentifier) (*User, error) {
+	return r.GetUserByLoginIdentifier(ctx, identifier)
 }
 
 type SessionResolver interface {
@@ -503,15 +517,6 @@ type SessionResolver interface {
 type ClaimsResolver func(context.Context, *User) (Claims, error)
 
 type Clock func() time.Time
-type UsernamePolicy interface{ Normalize(string) (string, error) }
-type UsernamePolicyFunc func(string) (string, error)
-
-func (f UsernamePolicyFunc) Normalize(value string) (string, error) {
-	if f == nil {
-		return "", ErrInvalidUsername
-	}
-	return f(value)
-}
 
 type ValidationError struct {
 	Field string
@@ -544,6 +549,11 @@ var (
 	ErrConflict           = errors.New("identity conflict")
 	ErrInvalidUsername    = fmt.Errorf("%w: invalid identity username", ErrInvalid)
 	ErrUsernameTaken      = errors.New("identity username already taken")
+	ErrInvalidPhone       = fmt.Errorf("%w: invalid identity phone", ErrInvalid)
+	ErrPhoneTaken         = errors.New("identity phone already taken")
+	ErrInvalidEmail       = fmt.Errorf("%w: invalid identity email", ErrInvalid)
+	ErrEmailTaken         = errors.New("identity email already taken")
+	ErrInvalidIdentifier  = fmt.Errorf("%w: invalid identity login identifier", ErrInvalid)
 	ErrInvalidUser        = fmt.Errorf("%w: invalid identity user", ErrInvalid)
 	ErrDisabled           = errors.New("identity user disabled")
 	ErrEmptySelection     = errors.New("empty identity selection")
@@ -559,49 +569,121 @@ var (
 	ErrRateLimited        = errors.New("identity rate limited")
 )
 
-func LowerASCIIUsernamePolicy(raw string) (string, error) {
-	value := strings.ToLower(strings.TrimSpace(raw))
+func NormalizeUsername(raw string) (string, error) {
+	value := strings.TrimSpace(raw)
 	if value == "" || len(value) > 64 {
 		return "", ErrInvalidUsername
 	}
-	var b strings.Builder
-	lastSeparator := false
-	for _, r := range value {
-		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
-			b.WriteRune(r)
-			lastSeparator = false
+	if value[0] < 'a' || value[0] > 'z' {
+		return "", ErrInvalidUsername
+	}
+	last := value[len(value)-1]
+	if !((last >= 'a' && last <= 'z') || (last >= '0' && last <= '9')) {
+		return "", ErrInvalidUsername
+	}
+	for i := 1; i < len(value); i++ {
+		switch c := value[i]; {
+		case c >= 'a' && c <= 'z':
 			continue
-		}
-		if (r == '-' || r == '_') && b.Len() > 0 && !lastSeparator {
-			b.WriteRune(r)
-			lastSeparator = true
+		case c >= '0' && c <= '9':
 			continue
-		}
-		return "", ErrInvalidUsername
-	}
-	if b.Len() == 0 || lastSeparator {
-		return "", ErrInvalidUsername
-	}
-	return b.String(), nil
-}
-
-func TrimUsernamePolicy(raw string) (string, error) {
-	value := norm.NFC.String(strings.TrimSpace(raw))
-	if value == "" || utf8.RuneCountInString(value) > 128 {
-		return "", ErrInvalidUsername
-	}
-	for _, r := range value {
-		if unicode.IsControl(r) || unicode.IsSpace(r) {
+		case c == '-' || c == '_':
+			continue
+		default:
 			return "", ErrInvalidUsername
 		}
 	}
 	return value, nil
 }
 
-// UsernameKey returns the canonical comparison key used for username lookup
-// and uniqueness. The displayed username is preserved separately.
-func UsernameKey(value string) string {
-	return norm.NFC.String(cases.Fold().String(norm.NFC.String(strings.TrimSpace(value))))
+func NormalizePhone(raw string) (string, error) {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return "", nil
+	}
+	if len(value) < 8 || len(value) > 16 || value[0] != '+' {
+		return "", ErrInvalidPhone
+	}
+	if value[1] < '1' || value[1] > '9' {
+		return "", ErrInvalidPhone
+	}
+	for i := 2; i < len(value); i++ {
+		if value[i] < '0' || value[i] > '9' {
+			return "", ErrInvalidPhone
+		}
+	}
+	return value, nil
+}
+
+func NormalizeEmail(raw string) (string, error) {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return "", nil
+	}
+	if len(value) > 254 {
+		return "", ErrInvalidEmail
+	}
+	address, err := mail.ParseAddress(value)
+	if err != nil || address.Address != value {
+		return "", ErrInvalidEmail
+	}
+	value = strings.ToLower(value)
+	if address, err = mail.ParseAddress(value); err != nil || address.Address != value {
+		return "", ErrInvalidEmail
+	}
+	return value, nil
+}
+
+func NormalizeLoginIdentifier(raw string) (LoginIdentifier, error) {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return LoginIdentifier{}, ErrInvalidIdentifier
+	}
+	if strings.Contains(value, "@") {
+		normalized, err := NormalizeEmail(value)
+		if err != nil {
+			return LoginIdentifier{}, ErrInvalidIdentifier
+		}
+		return LoginIdentifier{Kind: LoginIdentifierEmail, Value: normalized}, nil
+	}
+	if strings.HasPrefix(value, "+") {
+		normalized, err := NormalizePhone(value)
+		if err != nil {
+			return LoginIdentifier{}, ErrInvalidIdentifier
+		}
+		return LoginIdentifier{Kind: LoginIdentifierPhone, Value: normalized}, nil
+	}
+	normalized, err := NormalizeUsername(value)
+	if err != nil {
+		return LoginIdentifier{}, ErrInvalidIdentifier
+	}
+	return LoginIdentifier{Kind: LoginIdentifierUsername, Value: normalized}, nil
+}
+
+func ValidateLoginIdentifier(identifier LoginIdentifier) error {
+	if identifier.Value == "" {
+		return ErrInvalidIdentifier
+	}
+	switch identifier.Kind {
+	case LoginIdentifierUsername:
+		normalized, err := NormalizeUsername(identifier.Value)
+		if err != nil || normalized != identifier.Value {
+			return ErrInvalidIdentifier
+		}
+	case LoginIdentifierPhone:
+		normalized, err := NormalizePhone(identifier.Value)
+		if err != nil || normalized != identifier.Value {
+			return ErrInvalidIdentifier
+		}
+	case LoginIdentifierEmail:
+		normalized, err := NormalizeEmail(identifier.Value)
+		if err != nil || normalized != identifier.Value {
+			return ErrInvalidIdentifier
+		}
+	default:
+		return ErrInvalidIdentifier
+	}
+	return nil
 }
 
 func NormalizeRequestMeta(meta RequestMeta) (RequestMeta, error) {

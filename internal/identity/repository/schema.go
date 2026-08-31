@@ -17,7 +17,7 @@ var requiredSchema = []struct {
 	table   string
 	columns []string
 }{
-	{"identity_users", []string{"id", "username", "username_key", "display_name", "email", "avatar_url", "state", "disabled_at", "last_login_at", "created_at", "updated_at"}},
+	{"identity_users", []string{"id", "username", "phone_e164", "display_name", "email", "avatar_url", "state", "disabled_at", "last_login_at", "created_at", "updated_at"}},
 	{"identity_passwords", []string{"user_id", "scheme", "hash", "password_changed_at", "created_at", "updated_at"}},
 	{"identity_sessions", []string{"id", "token_hash", "user_id", "login_ip", "last_ip", "binding_hash", "expires_at", "created_at", "last_seen_at", "revoked_at", "revoked_reason"}},
 	{"identity_roles", []string{"id", "code", "name", "description", "system", "created_at", "updated_at"}},
@@ -69,17 +69,25 @@ func (s Schema) Apply(ctx context.Context, db bun.IDB) error {
 	indexes := []struct {
 		name, table string
 		columns     []string
+		unique      bool
 	}{
-		{"identity_sessions_user_expiry_idx", "identity_sessions", []string{"user_id", "expires_at"}},
-		{"identity_sessions_expiry_idx", "identity_sessions", []string{"expires_at"}},
-		{"identity_user_roles_role_idx", "identity_user_roles", []string{"role_id"}},
-		{"identity_role_permissions_permission_idx", "identity_role_permissions", []string{"permission_id"}},
+		{"identity_users_username_uq", "identity_users", []string{"username"}, true},
+		{"identity_users_phone_uq", "identity_users", []string{"phone_e164"}, true},
+		{"identity_users_email_uq", "identity_users", []string{"email"}, true},
+		{"identity_sessions_user_expiry_idx", "identity_sessions", []string{"user_id", "expires_at"}, false},
+		{"identity_sessions_expiry_idx", "identity_sessions", []string{"expires_at"}, false},
+		{"identity_user_roles_role_idx", "identity_user_roles", []string{"role_id"}, false},
+		{"identity_role_permissions_permission_idx", "identity_role_permissions", []string{"permission_id"}, false},
 	}
 	for _, index := range indexes {
 		// The index target is supplied explicitly. Do not bind a model here:
 		// Bun keeps a model's table as the primary target even when Table is
 		// called afterwards, which would make every index use identity_sessions.
-		if _, err := db.NewCreateIndex().Index(index.name).Table(index.table).Column(index.columns...).IfNotExists().Exec(ctx); err != nil {
+		create := db.NewCreateIndex().Index(index.name).Table(index.table).Column(index.columns...).IfNotExists()
+		if index.unique {
+			create = create.Unique()
+		}
+		if _, err := create.Exec(ctx); err != nil {
 			return fmt.Errorf("create identity index: %w", err)
 		}
 	}
@@ -121,6 +129,9 @@ func ValidateSchema(ctx context.Context, db *bun.DB) error {
 		table string
 		name  string
 	}{
+		{"identity_users", "identity_users_username_uq"},
+		{"identity_users", "identity_users_phone_uq"},
+		{"identity_users", "identity_users_email_uq"},
 		{"identity_sessions", "identity_sessions_user_expiry_idx"},
 		{"identity_sessions", "identity_sessions_expiry_idx"},
 		{"identity_user_roles", "identity_user_roles_role_idx"},

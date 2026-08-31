@@ -61,12 +61,8 @@ func New(options Options) (*Module, error) {
 	if now == nil {
 		now = func() time.Time { return time.Now().UTC() }
 	}
-	username := options.UsernamePolicy
-	if username == nil {
-		username = UsernamePolicyFunc(LowerASCIIUsernamePolicy)
-	}
 	store := repository.NewStore(options.DB)
-	users, err := service.NewUserService(store, store, username, now)
+	users, err := service.NewUserService(store, store, now)
 	if err != nil {
 		return nil, err
 	}
@@ -97,14 +93,14 @@ func New(options Options) (*Module, error) {
 	}
 	password, err := service.NewPasswordService(store, store, service.PasswordOptions{
 		Policy: service.PasswordPolicy{
-			MinLength:      options.Password.Policy.MinLength,
-			MaxLength:      options.Password.Policy.MaxLength,
-			RequireUpper:   options.Password.Policy.RequireUpper,
-			RequireLower:   options.Password.Policy.RequireLower,
-			RequireDigit:   options.Password.Policy.RequireDigit,
-			RequireSymbol:  options.Password.Policy.RequireSymbol,
-			RejectUsername: options.Password.Policy.RejectUsername,
-			RejectCommon:   options.Password.Policy.RejectCommon,
+			MinLength:             options.Password.Policy.MinLength,
+			MaxLength:             options.Password.Policy.MaxLength,
+			RequireUpper:          options.Password.Policy.RequireUpper,
+			RequireLower:          options.Password.Policy.RequireLower,
+			RequireDigit:          options.Password.Policy.RequireDigit,
+			RequireSymbol:         options.Password.Policy.RequireSymbol,
+			RejectLoginIdentifier: options.Password.Policy.RejectLoginIdentifier,
+			RejectCommon:          options.Password.Policy.RejectCommon,
 		},
 		Hasher: options.Password.Hasher,
 		Argon2id: service.Argon2idParams{
@@ -114,7 +110,7 @@ func New(options Options) (*Module, error) {
 			SaltLength:  options.Password.Argon2id.SaltLength,
 			KeyLength:   options.Password.Argon2id.KeyLength,
 		},
-	}, now, username)
+	}, now)
 	if err != nil {
 		return nil, err
 	}
@@ -197,6 +193,15 @@ func (m *Module) UserByID(ctx context.Context, id UserID) (*User, error) {
 func (m *Module) UserByUsername(ctx context.Context, username string) (*User, error) {
 	return m.users.UserByUsername(ctx, username)
 }
+func (m *Module) UserByPhone(ctx context.Context, phone string) (*User, error) {
+	return m.users.UserByPhone(ctx, phone)
+}
+func (m *Module) UserByEmail(ctx context.Context, email string) (*User, error) {
+	return m.users.UserByEmail(ctx, email)
+}
+func (m *Module) UserByLoginIdentifier(ctx context.Context, identifier string) (*User, error) {
+	return m.users.UserByLoginIdentifier(ctx, identifier)
+}
 func (m *Module) CreateUser(ctx context.Context, input UserCreateInput) (*User, error) {
 	return m.users.Create(ctx, input)
 }
@@ -223,11 +228,11 @@ func (m *Module) ProvisionUser(ctx context.Context, input UserProvisionInput) (*
 func (m *Module) RegisterAndLogin(ctx context.Context, input UserCreateInput, password string, meta RequestMeta) (*User, *IssuedSession, error) {
 	return m.account.RegisterAndLogin(ctx, input, password, meta)
 }
-func (m *Module) Authenticate(ctx context.Context, username, password string) (*User, error) {
-	return m.password.Authenticate(ctx, username, password)
+func (m *Module) Authenticate(ctx context.Context, identifier, password string) (*User, error) {
+	return m.password.Authenticate(ctx, identifier, password)
 }
-func (m *Module) Login(ctx context.Context, username, password string, meta RequestMeta) (*User, *IssuedSession, error) {
-	return m.account.Login(ctx, username, password, meta)
+func (m *Module) Login(ctx context.Context, identifier, password string, meta RequestMeta) (*User, *IssuedSession, error) {
+	return m.account.Login(ctx, identifier, password, meta)
 }
 func (m *Module) CreateSession(ctx context.Context, userID UserID, meta RequestMeta) (*IssuedSession, error) {
 	return m.account.IssueSession(ctx, userID, meta)
