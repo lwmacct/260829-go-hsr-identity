@@ -299,6 +299,15 @@ func TestLoginIdentifiersNormalizeAndRemainUnique(t *testing.T) {
 	}
 }
 
+func TestModuleImplementsPublicUserDirectory(t *testing.T) {
+	m, _ := testModule(t)
+	var users identity.UserDirectory = m
+	user, err := users.UserByUsername(context.Background(), "missing-user")
+	if user != nil || !errors.Is(err, identity.ErrNotFound) {
+		t.Fatalf("public user directory user=%#v err=%v", user, err)
+	}
+}
+
 func TestUsernameAndContactNormalizationRules(t *testing.T) {
 	valid := []string{"a", "alice", "a1", "a_b", "a-b"}
 	for _, value := range valid {
@@ -324,6 +333,21 @@ func TestUsernameAndContactNormalizationRules(t *testing.T) {
 	}
 	if got, err := identity.NormalizeEmail(" Alice@Example.com "); err != nil || got != "alice@example.com" {
 		t.Fatalf("NormalizeEmail = %q, %v", got, err)
+	}
+	if _, err := identity.NormalizeLoginIdentifier(strings.Repeat("x", 255)); !errors.Is(err, identity.ErrInvalidIdentifier) {
+		t.Fatalf("oversized login identifier error = %v", err)
+	}
+	if got := identity.LoginAttemptKey("Alice@Example.com"); got == "Alice@Example.com" || len(got) != 64 || got != identity.LoginAttemptKey("alice@example.com") {
+		t.Fatalf("email login attempt key = %q", got)
+	}
+	if got := identity.LoginAttemptKey("+8613812345678"); got == "+8613812345678" || len(got) != 64 {
+		t.Fatalf("phone login attempt key = %q", got)
+	}
+	if got := identity.LoginAttemptKey(strings.Repeat("x", 255)); got != "invalid" {
+		t.Fatalf("oversized login attempt key = %q", got)
+	}
+	if got := identity.LoginAttemptKey("not valid"); got != "invalid" {
+		t.Fatalf("invalid login attempt key = %q", got)
 	}
 }
 
@@ -531,6 +555,31 @@ func TestValidateSchemaRejectsMissingAndIncompleteSchema(t *testing.T) {
 	}
 	if err := identity.ValidateSchema(context.Background(), db); err == nil || !strings.Contains(err.Error(), "identity_users.username") {
 		t.Fatalf("incomplete schema validation error = %v", err)
+	}
+}
+
+func TestValidateSchemaRejectsWrongIdentityIndexDefinition(t *testing.T) {
+	_, db := testModule(t)
+	ctx := context.Background()
+	if _, err := db.NewRaw("DROP INDEX identity_users_email_uq").Exec(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.NewRaw("CREATE INDEX identity_users_email_uq ON identity_users (username)").Exec(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := identity.ValidateSchema(ctx, db); err == nil || !strings.Contains(err.Error(), "identity_users_email_uq") {
+		t.Fatalf("wrong identity index validation error = %v", err)
+	}
+}
+
+func TestValidateSchemaRejectsRemovedUsernameKey(t *testing.T) {
+	_, db := testModule(t)
+	ctx := context.Background()
+	if _, err := db.NewRaw("ALTER TABLE identity_users ADD COLUMN username_key TEXT").Exec(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := identity.ValidateSchema(ctx, db); err == nil || !strings.Contains(err.Error(), "username_key") {
+		t.Fatalf("stale username_key validation error = %v", err)
 	}
 }
 
@@ -953,6 +1002,28 @@ func TestLoginGuardRecordsCredentialOutcomes(t *testing.T) {
 	}
 	if len(guard.attempts) != 2 || guard.attempts[0].IdentifierType != identity.LoginIdentifierUsername || guard.attempts[0].IdentifierKey != guard.attempts[1].IdentifierKey {
 		t.Fatalf("guard attempts = %#v", guard.attempts)
+	}
+	if guard.attempts[0].IdentifierKey == "guard-user" || len(guard.attempts[0].IdentifierKey) != 64 {
+		t.Fatalf("guard identifier key is not opaque: %#v", guard.attempts[0])
+	}
+}
+
+func TestLoginGuardBoundsInvalidIdentifiers(t *testing.T) {
+	_, db := testModule(t)
+	guard := &testLoginGuard{}
+	m, err := identity.New(identity.Options{
+		DB:         db,
+		LoginGuard: guard,
+		Password:   identity.PasswordOptions{Policy: identity.PasswordPolicy{MinLength: 8}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := m.Login(context.Background(), strings.Repeat("x", 4096), "wrong horse", identity.RequestMeta{}); !errors.Is(err, identity.ErrUnauthenticated) {
+		t.Fatalf("oversized login error = %v", err)
+	}
+	if len(guard.attempts) != 1 || guard.attempts[0].IdentifierType != identity.LoginIdentifierInvalid || guard.attempts[0].IdentifierKey != "invalid" {
+		t.Fatalf("invalid guard attempt = %#v", guard.attempts)
 	}
 }
 

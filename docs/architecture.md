@@ -11,6 +11,8 @@ identity owns users, password credentials, sessions, account lifecycle, generic 
 - `repository` knows Bun models and queries. It maps `sql.ErrNoRows` and constraint errors to identity sentinels.
 - Human challenges are an extensible boundary: verification and challenge creation are separate contracts. Hosts can use the built-in providers in `pkg/identity/challenge` or supply custom implementations; identity owns the public configuration and challenge endpoints, independently configurable login/registration enforcement, and the module methods used by protected host actions.
 - `pkg/identity.Module` is the composition root and the only supported default entry point.
+- `pkg/identity.Module` implements the host-facing `identity.UserDirectory`;
+  typed login identifiers remain an internal service/repository contract.
 - `Options.Events` receives committed facts for host audit and telemetry. Event observers cannot fail the completed identity operation and are not a transactional outbox.
 
 The dependency direction is one-way: `handler → service → repository → Bun`.
@@ -45,3 +47,9 @@ transaction to a writer lock.
   resolves the input identifier type first and performs one indexed lookup.
 - Phone and email fields are login identifiers only; their ownership is not
   considered verified without an explicit host-owned verification flow.
+- Login guards receive a bounded opaque key derived from the normalized
+  identifier. Raw usernames, phone numbers, emails, and oversized malformed
+  input are not passed through the guard contract.
+- Schema validation checks required column nullability, named checks, index
+  uniqueness and index columns, and rejects removed legacy columns. It never
+  mutates the schema.

@@ -8,6 +8,8 @@
 6. Use `Options.Authorizer` only for additional host policy (for example resource ownership or tenant checks).
 7. Keep OAuth, SSH keys, audit storage, and business associations in host-owned tables and services. For human verification, use a provider from `pkg/identity/challenge` or implement `identity.HumanChallengeVerifier`; providers that issue challenges can also implement `identity.HumanChallengeCreator`. Inject them through `HTTP.Challenge.Verifier` and `HTTP.Challenge.Creator`, and set `HTTP.Challenge.RequireOnLogin` and/or `HTTP.Challenge.RequireOnRegistration` to enforce verification on the selected flows.
 8. Use `Options.Events` for committed audit/telemetry facts and post-commit runtime refresh. It is best-effort observation, not a transactional outbox. Use `DeleteParticipant` when host-owned cleanup must commit or roll back with identity user deletion.
+9. Inject `*identity.Module` directly wherever an `identity.UserDirectory` is required. Host services that address persistent usernames should call `UserByUsername`; authentication forms should submit a generic identifier.
+10. Treat `LoginAttempt.IdentifierKey` as an opaque throttling key. It contains no raw login identifier and malformed input uses the shared `invalid` bucket.
 
 Provision users through an explicit host CLI command that calls
 `Module.ProvisionUser` with the required role codes. The first administrator is
@@ -32,3 +34,7 @@ When `EnableAdminRoutes` is enabled, authorize the stable action constants
 `identity.ActionUserDelete` in the host callback.
 
 The module's table names are `identity_users`, `identity_passwords`, `identity_sessions`, `identity_roles`, `identity_permissions`, `identity_user_roles`, and `identity_role_permissions`. A host migration should import existing records once and then remove the old identity tables; no compatibility double-write layer is provided. Production startup should only open and use the database; schema creation belongs in an explicit deployment/init command.
+
+Phone numbers and emails are optional canonical login aliases. Their presence
+does not represent verified ownership. Password recovery, MFA, and trusted
+notifications require a separate host-owned verification workflow.

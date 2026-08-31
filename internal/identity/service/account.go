@@ -195,13 +195,12 @@ func (s *AccountService) Login(ctx context.Context, identifierValue, password st
 	}
 	identifier, identifierErr := domain.NormalizeLoginIdentifier(identifierValue)
 	attempt := domain.LoginAttempt{
-		RequestMeta: meta,
+		IdentifierType: domain.LoginIdentifierInvalid,
+		IdentifierKey:  domain.LoginAttemptKey(identifierValue),
+		RequestMeta:    meta,
 	}
 	if identifierErr == nil {
 		attempt.IdentifierType = identifier.Kind
-		attempt.IdentifierKey = identifier.Value
-	} else {
-		attempt.IdentifierKey = strings.TrimSpace(identifierValue)
 	}
 	if s.loginGuard != nil {
 		if err := s.loginGuard.Allow(ctx, attempt); err != nil {

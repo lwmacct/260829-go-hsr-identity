@@ -2,6 +2,8 @@ package domain
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/mail"
@@ -177,8 +179,10 @@ const (
 )
 
 type User struct {
-	ID          UserID
-	Username    string
+	ID       UserID
+	Username string
+	// Phone and Email are canonical password-login identifiers. Their presence
+	// does not prove ownership; verification and recovery flows are host-owned.
 	Phone       string
 	DisplayName string
 	Email       string
@@ -274,8 +278,10 @@ func (f EventSinkFunc) Record(ctx context.Context, event Event) {
 
 type LoginAttempt struct {
 	IdentifierType LoginIdentifierKind
-	IdentifierKey  string
-	RequestMeta    RequestMeta
+	// IdentifierKey is an opaque bounded throttling key. It never contains the
+	// raw username, phone number, email address, or malformed input.
+	IdentifierKey string
+	RequestMeta   RequestMeta
 }
 
 type LoginIdentifierKind string
@@ -284,6 +290,12 @@ const (
 	LoginIdentifierUsername LoginIdentifierKind = "username"
 	LoginIdentifierPhone    LoginIdentifierKind = "phone"
 	LoginIdentifierEmail    LoginIdentifierKind = "email"
+	LoginIdentifierInvalid  LoginIdentifierKind = "invalid"
+
+	MaxUsernameLength        = 64
+	MaxPhoneLength           = 16
+	MaxEmailLength           = 254
+	MaxLoginIdentifierLength = MaxEmailLength
 )
 
 type LoginIdentifier struct {
@@ -571,7 +583,7 @@ var (
 
 func NormalizeUsername(raw string) (string, error) {
 	value := strings.TrimSpace(raw)
-	if value == "" || len(value) > 64 {
+	if value == "" || len(value) > MaxUsernameLength {
 		return "", ErrInvalidUsername
 	}
 	if value[0] < 'a' || value[0] > 'z' {
@@ -601,7 +613,7 @@ func NormalizePhone(raw string) (string, error) {
 	if value == "" {
 		return "", nil
 	}
-	if len(value) < 8 || len(value) > 16 || value[0] != '+' {
+	if len(value) < 8 || len(value) > MaxPhoneLength || value[0] != '+' {
 		return "", ErrInvalidPhone
 	}
 	if value[1] < '1' || value[1] > '9' {
@@ -620,7 +632,7 @@ func NormalizeEmail(raw string) (string, error) {
 	if value == "" {
 		return "", nil
 	}
-	if len(value) > 254 {
+	if len(value) > MaxEmailLength {
 		return "", ErrInvalidEmail
 	}
 	address, err := mail.ParseAddress(value)
@@ -635,6 +647,9 @@ func NormalizeEmail(raw string) (string, error) {
 }
 
 func NormalizeLoginIdentifier(raw string) (LoginIdentifier, error) {
+	if len(raw) > MaxLoginIdentifierLength {
+		return LoginIdentifier{}, ErrInvalidIdentifier
+	}
 	value := strings.TrimSpace(raw)
 	if value == "" {
 		return LoginIdentifier{}, ErrInvalidIdentifier
@@ -658,6 +673,21 @@ func NormalizeLoginIdentifier(raw string) (LoginIdentifier, error) {
 		return LoginIdentifier{}, ErrInvalidIdentifier
 	}
 	return LoginIdentifier{Kind: LoginIdentifierUsername, Value: normalized}, nil
+}
+
+// LoginAttemptKey returns a stable, non-PII key for login throttling. Valid
+// identifiers are normalized before hashing; malformed or oversized inputs
+// share one bounded bucket so guards cannot be fed arbitrary attacker data.
+func LoginAttemptKey(raw string) string {
+	if len(raw) > MaxLoginIdentifierLength {
+		return "invalid"
+	}
+	identifier, err := NormalizeLoginIdentifier(raw)
+	if err != nil {
+		return "invalid"
+	}
+	sum := sha256.Sum256([]byte(string(identifier.Kind) + "\x00" + identifier.Value))
+	return hex.EncodeToString(sum[:])
 }
 
 func ValidateLoginIdentifier(identifier LoginIdentifier) error {

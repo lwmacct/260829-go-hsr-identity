@@ -37,6 +37,8 @@ mod, err := identity.New(identity.Options{
 if err != nil { return err }
 
 mod.Register(api) // 注册 /auth/*，以及配置开启时的 /admin/*
+
+var users identity.UserDirectory = mod
 ```
 
 `LoginEnabled` and `RegistrationEnabled` control the two password HTTP
@@ -55,7 +57,7 @@ through trusted host-side provisioning or authenticated administration.
 if err := identity.ApplySchema(ctx, db); err != nil { return err }
 ```
 
-`ApplySchema` 仅是显式 schema helper，不会执行缺列补齐或历史迁移。生产启动流程不应把它当作自动迁移；生产数据库由部署阶段重建或执行宿主维护的 SQL。
+`ApplySchema` 仅是显式 schema helper，不会执行缺列补齐或历史迁移。生产启动流程不应把它当作自动迁移；生产数据库由部署阶段重建或执行宿主维护的 SQL。`ValidateSchema` 会检查当前版本要求的列可空性、关键 CHECK 约束、索引唯一性及索引列，并拒绝已删除的旧字段；它只校验，不会修改数据库。
 
 宿主可通过 `Options.Events` 接收登录、账户、密码、Session 和 RBAC 的提交后事实事件，用于日志、审计或指标：
 
@@ -66,6 +68,8 @@ Events: identity.EventSinkFunc(func(ctx context.Context, event identity.Event) {
 ```
 
 事件 observer 不参与数据库事务，且其 panic 会被隔离；需要与 identity 写入强一致的宿主数据必须使用明确的事务参与边界，而不是依赖事件。
+
+`Module` 直接实现宿主侧 `identity.UserDirectory`，可注入只需要用户查询的服务。该公共接口接收原始字符串登录标识；typed `LoginIdentifier` 只用于 identity 内部 repository/service 边界。
 
 ## 公共能力
 
@@ -112,6 +116,10 @@ active sessions.
 1-64 个小写 ASCII 字符，格式为 `^[a-z]([a-z0-9_-]*[a-z0-9])?$`；
 手机号保存为带国家码的 E.164 形式；邮箱保存为去除首尾空白并转小写后的
 规范值。三个字段分别具有独立的唯一索引，手机号和邮箱可以为空。
+
+手机号和邮箱只是密码登录别名，不表示联系方式所有权已验证，也不能直接作为密码找回、MFA 或安全通知的可信依据。需要这些能力时由宿主实现明确的验证流程和状态存储。
+
+`LoginGuard` 接收的 `LoginAttempt.IdentifierKey` 是规范化标识的 SHA-256 opaque key，不是用户名、手机号或邮箱原文；非法或超长输入统一使用 `invalid` bucket。集成方不应尝试从该 key 恢复或记录原始标识。
 
 Session token 只在创建时返回，数据库只保存 SHA-256 hash。Session ID 是独立的非敏感标识。
 

@@ -41,7 +41,7 @@ type userListInput struct {
 	PageSize int    `query:"pageSize" minimum:"1" maximum:"100"`
 }
 type userProfileBody struct {
-	DisplayName string `json:"displayName" minLength:"1"`
+	DisplayName string  `json:"displayName" minLength:"1"`
 	Phone       *string `json:"phone,omitempty"`
 	Email       *string `json:"email,omitempty"`
 	AvatarURL   *string `json:"avatarUrl,omitempty"`
@@ -51,10 +51,10 @@ type userProfileInput struct {
 	Body   userProfileBody
 }
 type adminCreateBody struct {
-	Username    string `json:"username" minLength:"1"`
-	Phone       string `json:"phone,omitempty"`
+	Username    string `json:"username" minLength:"1" maxLength:"64"`
+	Phone       string `json:"phone,omitempty" maxLength:"16"`
 	DisplayName string `json:"displayName,omitempty"`
-	Email       string `json:"email,omitempty"`
+	Email       string `json:"email,omitempty" maxLength:"254"`
 	AvatarURL   string `json:"avatarUrl,omitempty"`
 	Password    string `json:"password" minLength:"1"`
 }

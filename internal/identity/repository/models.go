@@ -24,13 +24,13 @@ type UserModel struct {
 }
 
 func (*UserModel) BeforeCreateTable(_ context.Context, query *bun.CreateTableQuery) error {
-	query.ColumnExpr("CHECK (state IN ('active', 'disabled'))")
+	query.ColumnExpr("CONSTRAINT identity_users_state_chk CHECK (state IN ('active', 'disabled'))")
 	if query.Dialect().Name().String() == "pg" {
-		query.ColumnExpr("CHECK (username ~ '^[a-z]([a-z0-9_-]*[a-z0-9])?$' AND length(username) BETWEEN 1 AND 64)")
-		query.ColumnExpr("CHECK (phone_e164 IS NULL OR (phone_e164 ~ '^\\+[1-9][0-9]{6,14}$'))")
+		query.ColumnExpr("CONSTRAINT identity_users_username_chk CHECK (username ~ '^[a-z]([a-z0-9_-]*[a-z0-9])?$' AND length(username) BETWEEN 1 AND 64)")
+		query.ColumnExpr("CONSTRAINT identity_users_phone_chk CHECK (phone_e164 IS NULL OR (phone_e164 ~ '^\\+[1-9][0-9]{6,14}$'))")
 	} else {
-		query.ColumnExpr("CHECK (length(username) BETWEEN 1 AND 64 AND substr(username, 1, 1) GLOB '[a-z]' AND substr(username, length(username), 1) GLOB '[a-z0-9]' AND username NOT GLOB '*[^a-z0-9_-]*')")
-		query.ColumnExpr("CHECK (phone_e164 IS NULL OR (length(phone_e164) BETWEEN 8 AND 16 AND substr(phone_e164, 1, 1) = '+' AND substr(phone_e164, 2, 1) GLOB '[1-9]' AND substr(phone_e164, 2) NOT GLOB '*[^0-9]*'))")
+		query.ColumnExpr("CONSTRAINT identity_users_username_chk CHECK (length(username) BETWEEN 1 AND 64 AND substr(username, 1, 1) GLOB '[a-z]' AND substr(username, length(username), 1) GLOB '[a-z0-9]' AND username NOT GLOB '*[^a-z0-9_-]*')")
+		query.ColumnExpr("CONSTRAINT identity_users_phone_chk CHECK (phone_e164 IS NULL OR (length(phone_e164) BETWEEN 8 AND 16 AND substr(phone_e164, 1, 1) = '+' AND substr(phone_e164, 2, 1) GLOB '[1-9]' AND substr(phone_e164, 2) NOT GLOB '*[^0-9]*'))")
 	}
 	addUUIDv7Check(query, "id")
 	return nil

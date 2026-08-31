@@ -181,7 +181,7 @@ func (s *Store) UpdateUserState(ctx context.Context, ids []domain.UserID, state 
 	query := "UPDATE identity_users SET state = ?, disabled_at = ?, updated_at = ? WHERE id IN (" + strings.Join(values, ",") + ")"
 	res, err := s.db.NewRaw(query, args...).Exec(ctx)
 	if err != nil {
-		return 0, mapWriteError(err, false)
+		return 0, mapWriteError(err)
 	}
 	return res.RowsAffected()
 }
@@ -245,7 +245,7 @@ func (s *Store) UpsertPasswordCredential(ctx context.Context, in domain.Password
 	in.UserID = id
 	m := &PasswordModel{UserID: in.UserID.String(), Scheme: in.Scheme, Hash: in.Hash, PasswordChangedAt: in.PasswordChangedAt, CreatedAt: in.CreatedAt, UpdatedAt: in.UpdatedAt}
 	if _, err := s.db.NewInsert().Model(m).On("CONFLICT (user_id) DO UPDATE").Set("scheme = EXCLUDED.scheme").Set("hash = EXCLUDED.hash").Set("password_changed_at = EXCLUDED.password_changed_at").Set("updated_at = EXCLUDED.updated_at").Exec(ctx); err != nil {
-		return mapWriteError(err, false)
+		return mapWriteError(err)
 	}
 	return nil
 }
@@ -264,7 +264,7 @@ func (s *Store) UpdatePasswordCredentialIfMatch(ctx context.Context, id domain.U
 		Where("hash = ?", expectedHash).
 		Exec(ctx)
 	if err != nil {
-		return false, mapWriteError(err, false)
+		return false, mapWriteError(err)
 	}
 	updated, err := res.RowsAffected()
 	return updated == 1, err
@@ -291,7 +291,7 @@ func (s *Store) CreateSession(ctx context.Context, in domain.SessionRecord) erro
 	in.ID, in.UserID = id, userID
 	m := &SessionModel{ID: in.ID.String(), TokenHash: in.TokenHash, UserID: in.UserID.String(), LoginIP: in.LoginIP, LastIP: in.LastIP, BindingHash: in.BindingHash, ExpiresAt: in.ExpiresAt, CreatedAt: in.CreatedAt, LastSeenAt: in.LastSeenAt, RevokedAt: in.RevokedAt, RevokedReason: in.RevokedReason}
 	if _, err := s.db.NewInsert().Model(m).Exec(ctx); err != nil {
-		return mapWriteError(err, false)
+		return mapWriteError(err)
 	}
 	return nil
 }
@@ -385,12 +385,18 @@ func mapReadError(err error) error {
 	}
 	return err
 }
-func mapWriteError(err error, username bool) error {
+func mapWriteError(err error) error {
+	if code, _, ok := postgresErrorFields(err); ok {
+		switch code {
+		case "23502", "23503", "23505", "23514", "23P01":
+			return domain.ErrConflict
+		}
+	}
+	if sqliteConstraintError(err) {
+		return domain.ErrConflict
+	}
 	lower := strings.ToLower(err.Error())
 	if strings.Contains(lower, "unique") || strings.Contains(lower, "duplicate") {
-		if username && strings.Contains(lower, "username") {
-			return domain.ErrUsernameTaken
-		}
 		return domain.ErrConflict
 	}
 	if strings.Contains(lower, "foreign key") || strings.Contains(lower, "check constraint") {
@@ -400,6 +406,23 @@ func mapWriteError(err error, username bool) error {
 }
 
 func mapUserWriteError(err error) error {
+	if code, constraint, ok := postgresErrorFields(err); ok {
+		switch code {
+		case "23505":
+			switch constraint {
+			case "identity_users_username_uq":
+				return domain.ErrUsernameTaken
+			case "identity_users_phone_uq":
+				return domain.ErrPhoneTaken
+			case "identity_users_email_uq":
+				return domain.ErrEmailTaken
+			default:
+				return domain.ErrConflict
+			}
+		case "23502", "23503", "23514", "23P01":
+			return domain.ErrConflict
+		}
+	}
 	lower := strings.ToLower(err.Error())
 	switch {
 	case strings.Contains(lower, "identity_users_username_uq"), strings.Contains(lower, "identity_users.username"):
@@ -415,6 +438,29 @@ func mapUserWriteError(err error) error {
 	default:
 		return err
 	}
+}
+
+type postgresError interface {
+	error
+	Field(byte) string
+}
+
+type sqliteError interface {
+	error
+	Code() int
+}
+
+func postgresErrorFields(err error) (code, constraint string, ok bool) {
+	var pgErr postgresError
+	if !errors.As(err, &pgErr) {
+		return "", "", false
+	}
+	return pgErr.Field('C'), pgErr.Field('n'), true
+}
+
+func sqliteConstraintError(err error) bool {
+	var sqliteErr sqliteError
+	return errors.As(err, &sqliteErr) && sqliteErr.Code()&0xff == 19
 }
 
 func userFrom(m *UserModel) *domain.User {

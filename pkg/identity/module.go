@@ -27,6 +27,8 @@ type Module struct {
 	handler          *handler.Endpoint
 }
 
+var _ UserDirectory = (*Module)(nil)
+
 func New(options Options) (*Module, error) {
 	if options.DB == nil {
 		return nil, errors.New("identity: database is required")

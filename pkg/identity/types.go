@@ -1,6 +1,10 @@
 package identity
 
-import "github.com/lwmacct/260829-go-hsr-identity/pkg/identity/domain"
+import (
+	"context"
+
+	"github.com/lwmacct/260829-go-hsr-identity/pkg/identity/domain"
+)
 
 type UserID = domain.UserID
 type SessionID = domain.SessionID
@@ -35,7 +39,6 @@ type IssuedSession = domain.IssuedSession
 type UserCreateInput = domain.UserCreateInput
 type UserProvisionInput = domain.UserProvisionInput
 type UserUpdateProfileInput = domain.UserUpdateProfileInput
-type UserDirectory = domain.UserDirectory
 type SessionResolver = domain.SessionResolver
 type ClaimsResolver = domain.ClaimsResolver
 type Clock = domain.Clock
@@ -46,6 +49,17 @@ type HumanChallengeResponse = domain.HumanChallengeResponse
 type HumanChallengeProvider = domain.HumanChallengeProvider
 type HumanChallengeVerifier = domain.HumanChallengeVerifier
 type HumanChallengeCreator = domain.HumanChallengeCreator
+
+// UserDirectory is the host-facing user lookup boundary implemented by
+// Module. Public callers provide a raw login identifier; identity normalizes
+// and classifies it at the module boundary.
+type UserDirectory interface {
+	UserByID(context.Context, UserID) (*User, error)
+	UserByUsername(context.Context, string) (*User, error)
+	UserByPhone(context.Context, string) (*User, error)
+	UserByEmail(context.Context, string) (*User, error)
+	UserByLoginIdentifier(context.Context, string) (*User, error)
+}
 
 const (
 	StateActive                 = domain.StateActive
@@ -121,9 +135,14 @@ var (
 )
 
 const (
-	LoginIdentifierUsername = domain.LoginIdentifierUsername
-	LoginIdentifierPhone    = domain.LoginIdentifierPhone
-	LoginIdentifierEmail    = domain.LoginIdentifierEmail
+	LoginIdentifierUsername  = domain.LoginIdentifierUsername
+	LoginIdentifierPhone     = domain.LoginIdentifierPhone
+	LoginIdentifierEmail     = domain.LoginIdentifierEmail
+	LoginIdentifierInvalid   = domain.LoginIdentifierInvalid
+	MaxUsernameLength        = domain.MaxUsernameLength
+	MaxPhoneLength           = domain.MaxPhoneLength
+	MaxEmailLength           = domain.MaxEmailLength
+	MaxLoginIdentifierLength = domain.MaxLoginIdentifierLength
 )
 
 var (
@@ -131,6 +150,7 @@ var (
 	NormalizePhone           = domain.NormalizePhone
 	NormalizeEmail           = domain.NormalizeEmail
 	NormalizeLoginIdentifier = domain.NormalizeLoginIdentifier
+	LoginAttemptKey          = domain.LoginAttemptKey
 	ValidateLoginIdentifier  = domain.ValidateLoginIdentifier
 	NormalizeUserID          = domain.NormalizeUserID
 	NormalizeSessionID       = domain.NormalizeSessionID
@@ -147,5 +167,4 @@ var (
 	NormalizeRequestMeta     = domain.NormalizeRequestMeta
 	ContextWithPrincipal     = domain.ContextWithPrincipal
 	PrincipalFromContext     = domain.PrincipalFromContext
-	DirectoryFromRepository  = domain.DirectoryFromRepository
 )

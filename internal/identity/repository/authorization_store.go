@@ -61,7 +61,7 @@ func (s *Store) GetRoleByCode(ctx context.Context, code string) (*domain.Role, e
 func (s *Store) CreateRole(ctx context.Context, in domain.Role) (*domain.Role, error) {
 	m := &RoleModel{ID: in.ID.String(), Code: in.Code, Name: in.Name, Description: in.Description, System: in.System, CreatedAt: in.CreatedAt, UpdatedAt: in.UpdatedAt}
 	if _, err := s.db.NewInsert().Model(m).Exec(ctx); err != nil {
-		return nil, mapWriteError(err, false)
+		return nil, mapWriteError(err)
 	}
 	r := roleFrom(m)
 	return &r, nil
@@ -70,7 +70,7 @@ func (s *Store) CreateRole(ctx context.Context, in domain.Role) (*domain.Role, e
 func (s *Store) UpsertRole(ctx context.Context, in domain.Role) (*domain.Role, error) {
 	m := &RoleModel{ID: in.ID.String(), Code: in.Code, Name: in.Name, Description: in.Description, System: in.System, CreatedAt: in.CreatedAt, UpdatedAt: in.UpdatedAt}
 	if _, err := s.db.NewInsert().Model(m).On("CONFLICT (code) DO UPDATE").Set("name = EXCLUDED.name").Set("description = EXCLUDED.description").Set("system = EXCLUDED.system").Set("updated_at = EXCLUDED.updated_at").Exec(ctx); err != nil {
-		return nil, mapWriteError(err, false)
+		return nil, mapWriteError(err)
 	}
 	return s.GetRoleByCode(ctx, in.Code)
 }
@@ -83,7 +83,7 @@ func (s *Store) UpdateRole(ctx context.Context, id domain.RoleID, in domain.Role
 		Set("updated_at = ?", now).
 		Where("id = ?", id.String()).Exec(ctx)
 	if err != nil {
-		return nil, mapWriteError(err, false)
+		return nil, mapWriteError(err)
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
 		return nil, domain.ErrNotFound
@@ -165,7 +165,7 @@ func (s *Store) GetPermissionByCode(ctx context.Context, code string) (*domain.P
 func (s *Store) CreatePermission(ctx context.Context, in domain.Permission) (*domain.Permission, error) {
 	m := &PermissionModel{ID: in.ID.String(), Code: in.Code, Name: in.Name, Description: in.Description, System: in.System, CreatedAt: in.CreatedAt, UpdatedAt: in.UpdatedAt}
 	if _, err := s.db.NewInsert().Model(m).Exec(ctx); err != nil {
-		return nil, mapWriteError(err, false)
+		return nil, mapWriteError(err)
 	}
 	p := permissionFrom(m)
 	return &p, nil
@@ -174,7 +174,7 @@ func (s *Store) CreatePermission(ctx context.Context, in domain.Permission) (*do
 func (s *Store) UpsertPermission(ctx context.Context, in domain.Permission) (*domain.Permission, error) {
 	m := &PermissionModel{ID: in.ID.String(), Code: in.Code, Name: in.Name, Description: in.Description, System: in.System, CreatedAt: in.CreatedAt, UpdatedAt: in.UpdatedAt}
 	if _, err := s.db.NewInsert().Model(m).On("CONFLICT (code) DO UPDATE").Set("name = EXCLUDED.name").Set("description = EXCLUDED.description").Set("system = EXCLUDED.system").Set("updated_at = EXCLUDED.updated_at").Exec(ctx); err != nil {
-		return nil, mapWriteError(err, false)
+		return nil, mapWriteError(err)
 	}
 	return s.GetPermissionByCode(ctx, in.Code)
 }
@@ -187,7 +187,7 @@ func (s *Store) UpdatePermission(ctx context.Context, id domain.PermissionID, in
 		Set("updated_at = ?", now).
 		Where("id = ?", id.String()).Exec(ctx)
 	if err != nil {
-		return nil, mapWriteError(err, false)
+		return nil, mapWriteError(err)
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
 		return nil, domain.ErrNotFound
@@ -252,7 +252,7 @@ func (s *Store) ReplaceUserRoles(ctx context.Context, userID domain.UserID, role
 		return nil
 	}
 	if _, err := s.db.NewInsert().Model(&rows).Exec(ctx); err != nil {
-		return mapWriteError(err, false)
+		return mapWriteError(err)
 	}
 	return nil
 }
@@ -293,7 +293,7 @@ func (s *Store) ReplaceRolePermissions(ctx context.Context, roleID domain.RoleID
 		return nil
 	}
 	if _, err := s.db.NewInsert().Model(&rows).Exec(ctx); err != nil {
-		return mapWriteError(err, false)
+		return mapWriteError(err)
 	}
 	return nil
 }

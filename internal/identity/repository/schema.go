@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/uptrace/bun"
 	"github.com/uptrace/bun/dialect"
@@ -24,6 +25,22 @@ var requiredSchema = []struct {
 	{"identity_permissions", []string{"id", "code", "name", "description", "system", "created_at", "updated_at"}},
 	{"identity_user_roles", []string{"user_id", "role_id", "created_at"}},
 	{"identity_role_permissions", []string{"role_id", "permission_id", "created_at"}},
+}
+
+type schemaIndexRequirement struct {
+	name, table string
+	columns     []string
+	unique      bool
+}
+
+var requiredIndexes = []schemaIndexRequirement{
+	{name: "identity_users_username_uq", table: "identity_users", columns: []string{"username"}, unique: true},
+	{name: "identity_users_phone_uq", table: "identity_users", columns: []string{"phone_e164"}, unique: true},
+	{name: "identity_users_email_uq", table: "identity_users", columns: []string{"email"}, unique: true},
+	{name: "identity_sessions_user_expiry_idx", table: "identity_sessions", columns: []string{"user_id", "expires_at"}},
+	{name: "identity_sessions_expiry_idx", table: "identity_sessions", columns: []string{"expires_at"}},
+	{name: "identity_user_roles_role_idx", table: "identity_user_roles", columns: []string{"role_id"}},
+	{name: "identity_role_permissions_permission_idx", table: "identity_role_permissions", columns: []string{"permission_id"}},
 }
 
 func DatabaseSchema() Schema {
@@ -66,20 +83,7 @@ func (s Schema) Apply(ctx context.Context, db bun.IDB) error {
 			return fmt.Errorf("create identity table: %w", err)
 		}
 	}
-	indexes := []struct {
-		name, table string
-		columns     []string
-		unique      bool
-	}{
-		{"identity_users_username_uq", "identity_users", []string{"username"}, true},
-		{"identity_users_phone_uq", "identity_users", []string{"phone_e164"}, true},
-		{"identity_users_email_uq", "identity_users", []string{"email"}, true},
-		{"identity_sessions_user_expiry_idx", "identity_sessions", []string{"user_id", "expires_at"}, false},
-		{"identity_sessions_expiry_idx", "identity_sessions", []string{"expires_at"}, false},
-		{"identity_user_roles_role_idx", "identity_user_roles", []string{"role_id"}, false},
-		{"identity_role_permissions_permission_idx", "identity_role_permissions", []string{"permission_id"}, false},
-	}
-	for _, index := range indexes {
+	for _, index := range requiredIndexes {
 		// The index target is supplied explicitly. Do not bind a model here:
 		// Bun keeps a model's table as the primary target even when Table is
 		// called afterwards, which would make every index use identity_sessions.
@@ -109,6 +113,27 @@ func ValidateSchema(ctx context.Context, db *bun.DB) error {
 			}
 		}
 	}
+	if exists, err := schemaColumnExists(ctx, db, "identity_users", "username_key"); err != nil {
+		return fmt.Errorf("inspect removed identity schema column identity_users.username_key: %w", err)
+	} else if exists {
+		return fmt.Errorf("identity schema is stale: removed identity_users.username_key is still present")
+	}
+	for _, column := range []struct {
+		name     string
+		nullable bool
+	}{
+		{name: "username", nullable: false},
+		{name: "phone_e164", nullable: true},
+		{name: "email", nullable: true},
+	} {
+		nullable, err := schemaColumnNullable(ctx, db, "identity_users", column.name)
+		if err != nil {
+			return fmt.Errorf("inspect identity schema nullability identity_users.%s: %w", column.name, err)
+		}
+		if nullable != column.nullable {
+			return fmt.Errorf("identity schema is invalid: identity_users.%s nullable=%t, want %t", column.name, nullable, column.nullable)
+		}
+	}
 	switch db.Dialect().Name() {
 	case dialect.SQLite:
 		// SQLite foreign-key enforcement is connection-local. Identity deletes
@@ -125,27 +150,80 @@ func ValidateSchema(ctx context.Context, db *bun.DB) error {
 	default:
 		return fmt.Errorf("unsupported database dialect %s", db.Dialect().Name())
 	}
-	for _, index := range []struct {
-		table string
-		name  string
-	}{
-		{"identity_users", "identity_users_username_uq"},
-		{"identity_users", "identity_users_phone_uq"},
-		{"identity_users", "identity_users_email_uq"},
-		{"identity_sessions", "identity_sessions_user_expiry_idx"},
-		{"identity_sessions", "identity_sessions_expiry_idx"},
-		{"identity_user_roles", "identity_user_roles_role_idx"},
-		{"identity_role_permissions", "identity_role_permissions_permission_idx"},
+	for _, constraint := range []string{
+		"identity_users_state_chk",
+		"identity_users_username_chk",
+		"identity_users_phone_chk",
 	} {
-		exists, err := schemaIndexExists(ctx, db, index.table, index.name)
+		exists, err := schemaConstraintExists(ctx, db, "identity_users", constraint)
+		if err != nil {
+			return fmt.Errorf("inspect identity schema constraint %s: %w", constraint, err)
+		}
+		if !exists {
+			return fmt.Errorf("identity schema is incomplete: missing constraint %s", constraint)
+		}
+	}
+	for _, index := range requiredIndexes {
+		matches, err := schemaIndexMatches(ctx, db, index)
 		if err != nil {
 			return fmt.Errorf("inspect identity schema index %s: %w", index.name, err)
 		}
-		if !exists {
-			return fmt.Errorf("identity schema is incomplete: missing index %s", index.name)
+		if !matches {
+			return fmt.Errorf("identity schema is incomplete or invalid: index %s", index.name)
 		}
 	}
 	return nil
+}
+
+func schemaColumnNullable(ctx context.Context, db *bun.DB, table, column string) (bool, error) {
+	switch db.Dialect().Name() {
+	case dialect.SQLite:
+		var rows []struct {
+			Required int `bun:"required"`
+		}
+		if err := db.NewRaw(`SELECT "notnull" AS required FROM pragma_table_info(?) WHERE name = ?`, table, column).Scan(ctx, &rows); err != nil {
+			return false, err
+		}
+		if len(rows) != 1 {
+			return false, fmt.Errorf("column %s.%s not found", table, column)
+		}
+		return rows[0].Required == 0, nil
+	case dialect.PG:
+		var rows []struct {
+			Nullable string `bun:"is_nullable"`
+		}
+		if err := db.NewRaw("SELECT is_nullable FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = ? AND column_name = ?", table, column).Scan(ctx, &rows); err != nil {
+			return false, err
+		}
+		if len(rows) != 1 {
+			return false, fmt.Errorf("column %s.%s not found", table, column)
+		}
+		return rows[0].Nullable == "YES", nil
+	default:
+		return false, fmt.Errorf("unsupported database dialect %s", db.Dialect().Name())
+	}
+}
+
+func schemaConstraintExists(ctx context.Context, db *bun.DB, table, constraint string) (bool, error) {
+	var count int
+	switch db.Dialect().Name() {
+	case dialect.SQLite:
+		err := db.NewRaw("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ? AND lower(sql) LIKE ?", table, "%constraint "+strings.ToLower(constraint)+" %").Scan(ctx, &count)
+		return count > 0, err
+	case dialect.PG:
+		err := db.NewRaw(`
+			SELECT COUNT(*)
+			FROM pg_catalog.pg_constraint AS constraint_info
+			JOIN pg_catalog.pg_class AS table_info ON table_info.oid = constraint_info.conrelid
+			JOIN pg_catalog.pg_namespace AS namespace_info ON namespace_info.oid = table_info.relnamespace
+			WHERE namespace_info.nspname = current_schema()
+			  AND table_info.relname = ?
+			  AND constraint_info.conname = ?
+		`, table, constraint).Scan(ctx, &count)
+		return count > 0, err
+	default:
+		return false, fmt.Errorf("unsupported database dialect %s", db.Dialect().Name())
+	}
 }
 
 func schemaColumnExists(ctx context.Context, db *bun.DB, table, column string) (bool, error) {
@@ -162,15 +240,82 @@ func schemaColumnExists(ctx context.Context, db *bun.DB, table, column string) (
 	}
 }
 
-func schemaIndexExists(ctx context.Context, db *bun.DB, table, index string) (bool, error) {
-	var count int
+func schemaIndexMatches(ctx context.Context, db *bun.DB, required schemaIndexRequirement) (bool, error) {
 	switch db.Dialect().Name() {
 	case dialect.SQLite:
-		err := db.NewRaw("SELECT COUNT(*) FROM pragma_index_list(?) WHERE name = ?", table, index).Scan(ctx, &count)
-		return count > 0, err
+		var indexes []struct {
+			Name   string `bun:"name"`
+			Unique int    `bun:"unique"`
+		}
+		if err := db.NewRaw(`SELECT name, "unique" FROM pragma_index_list(?) WHERE name = ?`, required.table, required.name).Scan(ctx, &indexes); err != nil {
+			return false, err
+		}
+		if len(indexes) != 1 || (indexes[0].Unique == 1) != required.unique {
+			return false, nil
+		}
+		var columns []struct {
+			Name string `bun:"name"`
+		}
+		if err := db.NewRaw("SELECT name FROM pragma_index_info(?) ORDER BY seqno", required.name).Scan(ctx, &columns); err != nil {
+			return false, err
+		}
+		if len(columns) != len(required.columns) {
+			return false, nil
+		}
+		for i := range required.columns {
+			if columns[i].Name != required.columns[i] {
+				return false, nil
+			}
+		}
+		return true, nil
 	case dialect.PG:
-		err := db.NewRaw("SELECT COUNT(*) FROM pg_indexes WHERE schemaname = current_schema() AND tablename = ? AND indexname = ?", table, index).Scan(ctx, &count)
-		return count > 0, err
+		var indexes []struct {
+			Unique bool `bun:"is_unique"`
+		}
+		if err := db.NewRaw(`
+			SELECT index_info.indisunique AS is_unique
+			FROM pg_catalog.pg_class AS table_info
+			JOIN pg_catalog.pg_namespace AS namespace_info ON namespace_info.oid = table_info.relnamespace
+			JOIN pg_catalog.pg_index AS index_info ON index_info.indrelid = table_info.oid
+			JOIN pg_catalog.pg_class AS index_table ON index_table.oid = index_info.indexrelid
+			WHERE namespace_info.nspname = current_schema()
+			  AND table_info.relname = ?
+			  AND index_table.relname = ?
+		`, required.table, required.name).Scan(ctx, &indexes); err != nil {
+			return false, err
+		}
+		if len(indexes) != 1 || indexes[0].Unique != required.unique {
+			return false, nil
+		}
+		var columns []struct {
+			Name string `bun:"column_name"`
+		}
+		if err := db.NewRaw(`
+			SELECT attribute_info.attname AS column_name
+			FROM pg_catalog.pg_class AS table_info
+			JOIN pg_catalog.pg_namespace AS namespace_info ON namespace_info.oid = table_info.relnamespace
+			JOIN pg_catalog.pg_index AS index_info ON index_info.indrelid = table_info.oid
+			JOIN pg_catalog.pg_class AS index_table ON index_table.oid = index_info.indexrelid
+			CROSS JOIN LATERAL unnest(index_info.indkey::smallint[]) WITH ORDINALITY AS key_parts(attnum, ordinal)
+			JOIN pg_catalog.pg_attribute AS attribute_info
+			  ON attribute_info.attrelid = table_info.oid
+			 AND attribute_info.attnum = key_parts.attnum
+			WHERE namespace_info.nspname = current_schema()
+			  AND table_info.relname = ?
+			  AND index_table.relname = ?
+			ORDER BY key_parts.ordinal
+		`, required.table, required.name).Scan(ctx, &columns); err != nil {
+			return false, err
+		}
+		if len(columns) != len(required.columns) {
+			return false, nil
+		}
+		for i := range required.columns {
+			if columns[i].Name != required.columns[i] {
+				return false, nil
+			}
+		}
+		return true, nil
 	default:
 		return false, fmt.Errorf("unsupported database dialect %s", db.Dialect().Name())
 	}

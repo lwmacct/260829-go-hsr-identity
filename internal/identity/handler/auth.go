@@ -11,15 +11,15 @@ import (
 
 type registrationBody struct {
 	Challenge *challengeBody `json:"challenge,omitempty"`
-	Username  string         `json:"username" minLength:"1"`
-	Phone     string         `json:"phone,omitempty"`
-	Email     string         `json:"email,omitempty"`
+	Username  string         `json:"username" minLength:"1" maxLength:"64"`
+	Phone     string         `json:"phone,omitempty" maxLength:"16"`
+	Email     string         `json:"email,omitempty" maxLength:"254"`
 	Password  string         `json:"password" minLength:"1"`
 }
 type registrationInput struct{ Body registrationBody }
 type loginBody struct {
 	Challenge  *challengeBody `json:"challenge,omitempty"`
-	Identifier string         `json:"identifier" minLength:"1"`
+	Identifier string         `json:"identifier" minLength:"1" maxLength:"254"`
 	Password   string         `json:"password" minLength:"1"`
 }
 type loginInput struct{ Body loginBody }
