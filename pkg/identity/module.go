@@ -214,11 +214,12 @@ func (m *Module) RegisterUser(ctx context.Context, input UserCreateInput, passwo
 	return m.account.Register(ctx, input, password)
 }
 
-// BootstrapUser creates the first account for the requested role(s). It is
-// intended for an explicit operator command, not public registration.
-func (m *Module) BootstrapUser(ctx context.Context, input BootstrapInput) (*User, error) {
-	return m.account.BootstrapUser(ctx, input)
+// ProvisionUser atomically creates a user, password and explicit role
+// bindings. It is intended for trusted host-side administration.
+func (m *Module) ProvisionUser(ctx context.Context, input UserProvisionInput) (*User, error) {
+	return m.account.ProvisionUser(ctx, input)
 }
+
 func (m *Module) RegisterAndLogin(ctx context.Context, input UserCreateInput, password string, meta RequestMeta) (*User, *IssuedSession, error) {
 	return m.account.RegisterAndLogin(ctx, input, password, meta)
 }

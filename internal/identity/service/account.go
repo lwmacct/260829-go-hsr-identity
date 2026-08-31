@@ -71,47 +71,49 @@ func (s *AccountService) Register(ctx context.Context, in UserCreateInput, passw
 	return u, e
 }
 
-// BootstrapUser atomically creates the first user for one or more roles. Each
-// role must be unassigned; once any requested role has a user, the operation
-// fails with ErrBootstrapCompleted rather than changing existing privileges.
-func (s *AccountService) BootstrapUser(ctx context.Context, in domain.BootstrapInput) (*domain.User, error) {
-	roleCodes, err := normalizeBootstrapRoleCodes(in.RoleCodes)
+// ProvisionUser atomically creates a user, password and explicit role
+// bindings. It is intended for trusted host-side administration.
+func (s *AccountService) ProvisionUser(ctx context.Context, in domain.UserProvisionInput) (*domain.User, error) {
+	roleCodes, err := normalizeRequiredRoleCodes(in.RoleCodes)
 	if err != nil {
 		return nil, err
 	}
-	if in.User.State != "" && in.User.State != domain.StateActive {
+	user, err := s.createUserWithRoles(ctx, in.User, in.Password, func(c context.Context, uow UnitOfWork) ([]domain.RoleID, error) {
+		roleIDs := make([]domain.RoleID, 0, len(roleCodes))
+		for _, code := range roleCodes {
+			role, err := uow.Authorization().GetRoleByCode(c, code)
+			if err != nil {
+				return nil, err
+			}
+			roleIDs = append(roleIDs, role.ID)
+		}
+		return roleIDs, nil
+	})
+	return user, err
+}
+
+func (s *AccountService) createUserWithRoles(ctx context.Context, in UserCreateInput, password string, resolveRoleIDs func(context.Context, UnitOfWork) ([]domain.RoleID, error)) (*domain.User, error) {
+	if in.State != "" && in.State != domain.StateActive {
 		return nil, domain.ErrInvalidState
 	}
-	if err := s.passwords.Validate(in.User.Username, in.Password); err != nil {
+	if err := s.passwords.Validate(in.Username, password); err != nil {
 		return nil, err
 	}
-	hash, err := s.passwords.Hash(in.Password)
+	hash, err := s.passwords.Hash(password)
 	if err != nil {
 		return nil, err
 	}
 	var user *domain.User
 	err = s.tx.WithinTx(ctx, func(c context.Context, uow UnitOfWork) error {
-		roleIDs := make([]domain.RoleID, 0, len(roleCodes))
-		for _, code := range roleCodes {
-			role, err := uow.Authorization().LockRoleByCode(c, code)
-			if err != nil {
-				return err
-			}
-			count, err := uow.Authorization().CountRoleUsers(c, role.ID)
-			if err != nil {
-				return err
-			}
-			if count > 0 {
-				return domain.ErrBootstrapCompleted
-			}
-			roleIDs = append(roleIDs, role.ID)
+		roleIDs, err := resolveRoleIDs(c, uow)
+		if err != nil {
+			return err
 		}
-
 		users, err := s.userService(uow)
 		if err != nil {
 			return err
 		}
-		user, err = users.Create(c, in.User)
+		user, err = users.Create(c, in)
 		if err != nil {
 			return err
 		}
@@ -128,7 +130,6 @@ func (s *AccountService) BootstrapUser(ctx context.Context, in domain.BootstrapI
 		return nil, err
 	}
 	emitEvent(ctx, s.events, domain.Event{Type: domain.EventUserCreated, At: user.CreatedAt, UserID: user.ID, Username: user.Username})
-	emitEvent(ctx, s.events, domain.Event{Type: domain.EventBootstrapCompleted, At: user.CreatedAt, UserID: user.ID, Username: user.Username})
 	return user, nil
 }
 
@@ -366,9 +367,9 @@ func (s *AccountService) passwordService(uow UnitOfWork) (*PasswordService, erro
 
 func timePtr(value time.Time) *time.Time { return &value }
 
-func normalizeBootstrapRoleCodes(codes []string) ([]string, error) {
+func normalizeRequiredRoleCodes(codes []string) ([]string, error) {
 	if len(codes) == 0 {
-		return nil, errors.New("identity: at least one bootstrap role is required")
+		return nil, errors.New("identity: at least one role is required")
 	}
 	normalized := make([]string, 0, len(codes))
 	seen := make(map[string]struct{}, len(codes))

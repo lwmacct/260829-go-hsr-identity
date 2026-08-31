@@ -9,7 +9,6 @@ import (
 
 	"github.com/lwmacct/260829-go-hsr-identity/pkg/identity/domain"
 	"github.com/uptrace/bun"
-	"github.com/uptrace/bun/dialect"
 )
 
 func (s *Store) ListRoles(ctx context.Context, filter domain.RoleFilter) ([]domain.Role, int, error) {
@@ -57,35 +56,6 @@ func (s *Store) GetRoleByCode(ctx context.Context, code string) (*domain.Role, e
 	}
 	r := roleFrom(m)
 	return &r, nil
-}
-
-func (s *Store) LockRoleByCode(ctx context.Context, code string) (*domain.Role, error) {
-	m := new(RoleModel)
-	q := s.db.NewSelect().Model(m).Where("r.code = ?", strings.TrimSpace(code))
-	if s.db.Dialect().Name() == dialect.PG {
-		q.For("UPDATE")
-	}
-	if err := q.Scan(ctx); err != nil {
-		return nil, mapReadError(err)
-	}
-	// SQLite has no SELECT ... FOR UPDATE. A no-op write upgrades the
-	// transaction to a writer lock before the bootstrap assignment count is
-	// checked, serializing competing bootstrap attempts.
-	if s.db.Dialect().Name() == dialect.SQLite {
-		if _, err := s.db.NewRaw("UPDATE identity_roles SET updated_at = updated_at WHERE id = ?", m.ID).Exec(ctx); err != nil {
-			return nil, err
-		}
-	}
-	r := roleFrom(m)
-	return &r, nil
-}
-
-func (s *Store) CountRoleUsers(ctx context.Context, roleID domain.RoleID) (int, error) {
-	var count int
-	if err := s.db.NewRaw("SELECT count(*) FROM identity_user_roles WHERE role_id = ?", roleID.String()).Scan(ctx, &count); err != nil {
-		return 0, err
-	}
-	return count, nil
 }
 
 func (s *Store) CreateRole(ctx context.Context, in domain.Role) (*domain.Role, error) {

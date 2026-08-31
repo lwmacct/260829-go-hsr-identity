@@ -31,7 +31,7 @@ type SessionRecord = domain.SessionRecord
 type Session = domain.Session
 type IssuedSession = domain.IssuedSession
 type UserCreateInput = domain.UserCreateInput
-type BootstrapInput = domain.BootstrapInput
+type UserProvisionInput = domain.UserProvisionInput
 type UserUpdateProfileInput = domain.UserUpdateProfileInput
 type UserDirectory = domain.UserDirectory
 type SessionResolver = domain.SessionResolver
@@ -54,7 +54,6 @@ const (
 	EventUserUpdated            = domain.EventUserUpdated
 	EventUserStateChanged       = domain.EventUserStateChanged
 	EventUserDeleted            = domain.EventUserDeleted
-	EventBootstrapCompleted     = domain.EventBootstrapCompleted
 	EventLoginSucceeded         = domain.EventLoginSucceeded
 	EventLoginFailed            = domain.EventLoginFailed
 	EventPasswordChanged        = domain.EventPasswordChanged
@@ -97,7 +96,6 @@ var (
 	ErrConflict                    = domain.ErrConflict
 	ErrInvalidUsername             = domain.ErrInvalidUsername
 	ErrUsernameTaken               = domain.ErrUsernameTaken
-	ErrBootstrapCompleted          = domain.ErrBootstrapCompleted
 	ErrInvalidUser                 = domain.ErrInvalidUser
 	ErrDisabled                    = domain.ErrDisabled
 	ErrEmptySelection              = domain.ErrEmptySelection

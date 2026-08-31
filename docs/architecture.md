@@ -24,10 +24,10 @@ Host-owned deletion cleanup can join the same transaction through
 is appropriate for runtime refresh, logging, audit ingestion, and metrics; it
 cannot roll back the completed database work.
 
-`Module.BootstrapUser` uses the same transaction boundary. It locks each
-requested role, verifies that no user is assigned to it, and then creates the
-account, password credential, and role bindings atomically. PostgreSQL uses
-`FOR UPDATE`; SQLite upgrades the transaction to a writer lock.
+`Module.ProvisionUser` uses the same transaction boundary. It locks each
+requested role and then creates the account, password credential, and role
+bindings atomically. PostgreSQL uses `FOR UPDATE`; SQLite upgrades the
+transaction to a writer lock.
 
 ## Security invariants
 

@@ -3,6 +3,6 @@
 // and optional authentication enforcement. Reusable image and remote-token
 // providers are available from the sibling pkg/identity/challenge package;
 // hosts may still supply their own provider. OAuth, SSH keys, auditing, and
-// application data remain host concerns. Operators can provision an initial
-// privileged account explicitly with Module.BootstrapUser.
+// application data remain host concerns. Trusted hosts can provision users with
+// explicit role bindings through Module.ProvisionUser.
 package identity

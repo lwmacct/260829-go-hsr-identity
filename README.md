@@ -45,6 +45,10 @@ creation independently: a verifier is enough for remote token providers,
 while a creator is needed for image challenges or other server-issued
 challenges.
 
+Hosts should set `Authorization.DefaultRoleCodes` to the ordinary role(s)
+assigned to public registrations. Privileged roles must only be assigned
+through trusted host-side provisioning or authenticated administration.
+
 测试或显式数据库初始化命令可由宿主执行 Bun schema：
 
 ```go
@@ -71,6 +75,13 @@ user, err = mod.Authenticate(ctx, "alice", password)
 user, issued, err := mod.Login(ctx, "alice", password, identity.RequestMeta{ClientIP: "203.0.113.10"})
 principal, err := mod.ResolveSession(ctx, issued.Token, identity.RequestMeta{ClientIP: "203.0.113.10"})
 
+// Trusted host-side provisioning with explicit roles:
+user, err = mod.ProvisionUser(ctx, identity.UserProvisionInput{
+    User:      identity.UserCreateInput{Username: "admin"},
+    Password:  password,
+    RoleCodes: []string{"admin"},
+})
+
 // OAuth/SSH 等宿主登录完成后，直接签发 identity Session：
 issued, err = mod.CreateSession(ctx, user.ID, identity.RequestMeta{ClientIP: "203.0.113.10"})
 
@@ -80,18 +91,10 @@ permission, err := mod.EnsurePermission(ctx, identity.PermissionInput{Code: "rel
 err = mod.SetRolePermissions(ctx, role.ID, []string{permission.Code})
 err = mod.SetUserRoles(ctx, user.ID, []string{role.Code})
 
-// Bootstrap an initial privileged account from an explicit operator command:
-user, err := mod.BootstrapUser(ctx, identity.BootstrapInput{
-    User: identity.UserCreateInput{Username: "admin", DisplayName: "Administrator"},
-    Password: password,
-    RoleCodes: []string{"admin"},
-})
-```
-
-`BootstrapUser` creates the account, password and requested role bindings in
-one transaction. Every requested role must still be unassigned; a second
-bootstrap attempt returns `identity.ErrBootstrapCompleted` and never changes
-an existing account.
+`ProvisionUser` creates the account, password and explicit role bindings in
+one transaction and can be used repeatedly by trusted host-side administration.
+`ResetPassword` changes an existing user's password and revokes that user's
+active sessions.
 
 `Authenticate` 只做凭据校验；需要建立登录态时使用 `Login`。`CreateSession`
 用于宿主已经完成 OAuth/SSH 等外部凭据校验的场景，同样会记录

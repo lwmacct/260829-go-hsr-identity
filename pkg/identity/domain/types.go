@@ -228,7 +228,6 @@ const (
 	EventUserUpdated            EventType = "identity.user.updated"
 	EventUserStateChanged       EventType = "identity.user.state_changed"
 	EventUserDeleted            EventType = "identity.user.deleted"
-	EventBootstrapCompleted     EventType = "identity.bootstrap.completed"
 	EventLoginSucceeded         EventType = "identity.login.succeeded"
 	EventLoginFailed            EventType = "identity.login.failed"
 	EventPasswordChanged        EventType = "identity.password.changed"
@@ -307,10 +306,9 @@ type UserCreateInput struct {
 	State       State
 }
 
-// BootstrapInput describes the first privileged account for an application.
-// Role codes are supplied by the host so identity remains independent of any
-// particular administrator role name.
-type BootstrapInput struct {
+// UserProvisionInput describes a user account with explicit role bindings.
+// It is intended for trusted host-side provisioning, not public registration.
+type UserProvisionInput struct {
 	User      UserCreateInput
 	Password  string
 	RoleCodes []string
@@ -460,10 +458,6 @@ type AuthorizationRepository interface {
 	GetRole(context.Context, RoleID) (*Role, error)
 	GetRoleByCode(context.Context, string) (*Role, error)
 	UpsertRole(context.Context, Role) (*Role, error)
-	// LockRoleByCode returns a role while holding the transaction lock needed
-	// for one-time bootstrap operations.
-	LockRoleByCode(context.Context, string) (*Role, error)
-	CountRoleUsers(context.Context, RoleID) (int, error)
 	CreateRole(context.Context, Role) (*Role, error)
 	UpdateRole(context.Context, RoleID, RoleInput, time.Time) (*Role, error)
 	DeleteRole(context.Context, RoleID) error
@@ -550,7 +544,6 @@ var (
 	ErrConflict           = errors.New("identity conflict")
 	ErrInvalidUsername    = fmt.Errorf("%w: invalid identity username", ErrInvalid)
 	ErrUsernameTaken      = errors.New("identity username already taken")
-	ErrBootstrapCompleted = errors.New("identity bootstrap already completed")
 	ErrInvalidUser        = fmt.Errorf("%w: invalid identity user", ErrInvalid)
 	ErrDisabled           = errors.New("identity user disabled")
 	ErrEmptySelection     = errors.New("empty identity selection")

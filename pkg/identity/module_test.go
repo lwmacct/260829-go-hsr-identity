@@ -221,52 +221,58 @@ func TestUnicodeUsernameKeyPreservesDisplayAndRejectsEquivalentDuplicate(t *test
 	}
 }
 
-func TestBootstrapUserCreatesOnlyUnassignedRole(t *testing.T) {
+func TestProvisionUserCreatesExplicitRoles(t *testing.T) {
 	m, _ := testModule(t)
 	ctx := context.Background()
 	if _, err := m.EnsureRole(ctx, identity.RoleInput{Code: "admin", Name: "Administrator", System: true}); err != nil {
 		t.Fatal(err)
 	}
 
-	admin, err := m.BootstrapUser(ctx, identity.BootstrapInput{
-		User:      identity.UserCreateInput{Username: "Admin", DisplayName: "Administrator"},
+	user, err := m.ProvisionUser(ctx, identity.UserProvisionInput{
+		User:      identity.UserCreateInput{Username: "provisioned"},
 		Password:  "correct horse",
-		RoleCodes: []string{" ADMIN "},
+		RoleCodes: []string{"admin"},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if admin.Username != "admin" || admin.DisplayName != "Administrator" {
-		t.Fatalf("bootstrapped user = %#v", admin)
-	}
-	if _, err := m.Authenticate(ctx, "admin", "correct horse"); err != nil {
+	if _, err := m.Authenticate(ctx, "provisioned", "correct horse"); err != nil {
 		t.Fatal(err)
 	}
-	roles, err := m.UserRoles(ctx, admin.ID)
+	roles, err := m.UserRoles(ctx, user.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(roles) != 1 || roles[0].Code != "admin" {
-		t.Fatalf("admin roles = %#v", roles)
-	}
-
-	if _, err := m.BootstrapUser(ctx, identity.BootstrapInput{
-		User:      identity.UserCreateInput{Username: "another-admin"},
-		Password:  "correct horse",
-		RoleCodes: []string{"admin"},
-	}); !errors.Is(err, identity.ErrBootstrapCompleted) {
-		t.Fatalf("second bootstrap error = %v", err)
+		t.Fatalf("provisioned user roles = %#v", roles)
 	}
 }
 
-func TestBootstrapUserRequiresRole(t *testing.T) {
-	m, _ := testModule(t)
-	_, err := m.BootstrapUser(context.Background(), identity.BootstrapInput{
-		User:     identity.UserCreateInput{Username: "admin"},
-		Password: "correct horse",
+func TestRegisterUserAssignsConfiguredDefaultRoles(t *testing.T) {
+	_, db := testModule(t)
+	ctx := context.Background()
+	setup := identity.MustNew(identity.Options{DB: db})
+	if _, err := setup.EnsureRole(ctx, identity.RoleInput{Code: "user", Name: "User", System: true}); err != nil {
+		t.Fatal(err)
+	}
+	m, err := identity.New(identity.Options{
+		DB:            db,
+		Authorization: identity.AuthorizationOptions{DefaultRoleCodes: []string{"user"}},
 	})
-	if err == nil {
-		t.Fatal("bootstrap without a role succeeded")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	user, err := m.RegisterUser(ctx, identity.UserCreateInput{Username: "default-role-user"}, "correct horse")
+	if err != nil {
+		t.Fatal(err)
+	}
+	roles, err := m.UserRoles(ctx, user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(roles) != 1 || roles[0].Code != "user" {
+		t.Fatalf("default roles = %#v", roles)
 	}
 }
 
