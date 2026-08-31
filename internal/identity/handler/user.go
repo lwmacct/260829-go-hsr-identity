@@ -115,7 +115,7 @@ func (e *Endpoint) adminGet(ctx context.Context, input *userPathInput) (*userRes
 	if err := e.authorize(ctx, domain.ActionUserRead); err != nil {
 		return nil, mapError(err, false)
 	}
-	id, err := parseUUID7(input.UserID)
+	id, err := domain.ParseUserID(input.UserID)
 	if err != nil {
 		return nil, mapError(err, false)
 	}
@@ -129,7 +129,7 @@ func (e *Endpoint) adminUpdate(ctx context.Context, input *userProfileInput) (*u
 	if err := e.authorize(ctx, domain.ActionUserUpdate); err != nil {
 		return nil, mapError(err, false)
 	}
-	id, err := parseUUID7(input.UserID)
+	id, err := domain.ParseUserID(input.UserID)
 	if err != nil {
 		return nil, mapError(err, false)
 	}
@@ -143,7 +143,7 @@ func (e *Endpoint) adminState(ctx context.Context, input *userStateInput) (*user
 	if err := e.authorize(ctx, domain.ActionUserUpdate); err != nil {
 		return nil, mapError(err, false)
 	}
-	id, err := parseUUID7(input.UserID)
+	id, err := domain.ParseUserID(input.UserID)
 	if err != nil {
 		return nil, mapError(err, false)
 	}
@@ -160,7 +160,7 @@ func (e *Endpoint) adminResetPassword(ctx context.Context, input *resetPasswordI
 	if err := e.authorize(ctx, domain.ActionUserResetPassword); err != nil {
 		return nil, mapError(err, false)
 	}
-	id, err := parseUUID7(input.UserID)
+	id, err := domain.ParseUserID(input.UserID)
 	if err != nil {
 		return nil, mapError(err, false)
 	}
@@ -173,7 +173,7 @@ func (e *Endpoint) adminDelete(ctx context.Context, input *userPathInput) (*noCo
 	if err := e.authorize(ctx, domain.ActionUserDelete); err != nil {
 		return nil, mapError(err, false)
 	}
-	id, err := parseUUID7(input.UserID)
+	id, err := domain.ParseUserID(input.UserID)
 	if err != nil {
 		return nil, mapError(err, false)
 	}

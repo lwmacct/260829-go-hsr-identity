@@ -8,6 +8,7 @@ import (
 	"time"
 	"uuid"
 
+	"github.com/lwmacct/260829-go-hsr-identity/internal/identity/service"
 	"github.com/lwmacct/260829-go-hsr-identity/pkg/identity/domain"
 	"github.com/uptrace/bun"
 )
@@ -30,13 +31,13 @@ func (s *Store) Passwords() domain.PasswordRepository          { return s }
 func (s *Store) Sessions() domain.SessionRepository            { return s }
 func (s *Store) Authorization() domain.AuthorizationRepository { return s }
 
-func (s *Store) WithinTx(ctx context.Context, fn func(context.Context, domain.UnitOfWork) error) error {
-	return s.WithinTxDB(ctx, func(txctx context.Context, _ bun.IDB, uow domain.UnitOfWork) error {
+func (s *Store) WithinTx(ctx context.Context, fn func(context.Context, service.UnitOfWork) error) error {
+	return s.WithinTxDB(ctx, func(txctx context.Context, _ bun.IDB, uow service.UnitOfWork) error {
 		return fn(txctx, uow)
 	})
 }
 
-func (s *Store) WithinTxDB(ctx context.Context, fn func(context.Context, bun.IDB, domain.UnitOfWork) error) error {
+func (s *Store) WithinTxDB(ctx context.Context, fn func(context.Context, bun.IDB, service.UnitOfWork) error) error {
 	if s == nil || s.root == nil {
 		return errors.New("identity repository: transaction requires root bun database")
 	}
@@ -165,12 +166,15 @@ func (s *Store) DeleteUsers(ctx context.Context, ids []domain.UserID) error {
 	}
 	for _, id := range ids {
 		// Delete dependents explicitly as well as declaring ON DELETE CASCADE.
-		// This keeps behavior deterministic on SQLite, where foreign-key
-		// enforcement is opt-in, and on hosts with legacy schemas.
+		// This keeps behavior deterministic on SQLite and allows the repository
+		// contract to remain safe when foreign-key enforcement is unavailable.
 		if _, err := s.db.NewDelete().Model((*SessionModel)(nil)).Where("user_id = ?", id.String()).Exec(ctx); err != nil {
 			return err
 		}
 		if _, err := s.db.NewDelete().Model((*PasswordModel)(nil)).Where("user_id = ?", id.String()).Exec(ctx); err != nil {
+			return err
+		}
+		if _, err := s.db.NewDelete().Model((*UserRoleModel)(nil)).Where("user_id = ?", id.String()).Exec(ctx); err != nil {
 			return err
 		}
 		res, err := s.db.NewDelete().Model((*UserModel)(nil)).Where("id = ?", id.String()).Exec(ctx)
@@ -190,7 +194,8 @@ func (s *Store) GetPasswordCredential(ctx context.Context, id domain.UserID) (*d
 	if err := s.db.NewSelect().Model(m).Where("ip.user_id = ?", id.String()).Scan(ctx); err != nil {
 		return nil, mapReadError(err)
 	}
-	userID, _ := uuid.Parse(m.UserID)
+	userIDRaw, _ := uuid.Parse(m.UserID)
+	userID := domain.UserID(userIDRaw)
 	return &domain.PasswordCredential{UserID: userID, Scheme: m.Scheme, Hash: m.Hash, PasswordChangedAt: m.PasswordChangedAt, CreatedAt: m.CreatedAt, UpdatedAt: m.UpdatedAt}, nil
 }
 
@@ -356,18 +361,18 @@ func mapWriteError(err error, username bool) error {
 	return err
 }
 func userFrom(m *UserModel) *domain.User {
-	id, _ := uuid.Parse(m.ID)
-	return &domain.User{ID: id, Username: m.Username, DisplayName: m.DisplayName, Email: m.Email, AvatarURL: m.AvatarURL, State: domain.State(m.State), DisabledAt: m.DisabledAt, LastLoginAt: m.LastLoginAt, CreatedAt: m.CreatedAt, UpdatedAt: m.UpdatedAt}
+	idRaw, _ := uuid.Parse(m.ID)
+	return &domain.User{ID: domain.UserID(idRaw), Username: m.Username, DisplayName: m.DisplayName, Email: m.Email, AvatarURL: m.AvatarURL, State: domain.State(m.State), DisabledAt: m.DisabledAt, LastLoginAt: m.LastLoginAt, CreatedAt: m.CreatedAt, UpdatedAt: m.UpdatedAt}
 }
 func sessionFrom(m *SessionModel) *domain.SessionRecord {
-	sessionID, _ := uuid.Parse(m.ID)
-	userID, _ := uuid.Parse(m.UserID)
-	return &domain.SessionRecord{ID: sessionID, TokenHash: append([]byte(nil), m.TokenHash...), UserID: userID, LoginIP: m.LoginIP, LastIP: m.LastIP, BindingHash: append([]byte(nil), m.BindingHash...), ExpiresAt: m.ExpiresAt, CreatedAt: m.CreatedAt, LastSeenAt: m.LastSeenAt, RevokedAt: m.RevokedAt, RevokedReason: m.RevokedReason}
+	sessionIDRaw, _ := uuid.Parse(m.ID)
+	userIDRaw, _ := uuid.Parse(m.UserID)
+	return &domain.SessionRecord{ID: domain.SessionID(sessionIDRaw), TokenHash: append([]byte(nil), m.TokenHash...), UserID: domain.UserID(userIDRaw), LoginIP: m.LoginIP, LastIP: m.LastIP, BindingHash: append([]byte(nil), m.BindingHash...), ExpiresAt: m.ExpiresAt, CreatedAt: m.CreatedAt, LastSeenAt: m.LastSeenAt, RevokedAt: m.RevokedAt, RevokedReason: m.RevokedReason}
 }
 
 var _ domain.UserRepository = (*Store)(nil)
 var _ domain.PasswordRepository = (*Store)(nil)
 var _ domain.SessionRepository = (*Store)(nil)
-var _ domain.UnitOfWork = (*Store)(nil)
-var _ domain.TxManager = (*Store)(nil)
-var _ domain.TxManagerWithDB = (*Store)(nil)
+var _ service.UnitOfWork = (*Store)(nil)
+var _ service.TxManager = (*Store)(nil)
+var _ service.TxManagerWithDB = (*Store)(nil)

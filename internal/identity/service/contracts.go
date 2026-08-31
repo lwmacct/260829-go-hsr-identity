@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/lwmacct/260829-go-hsr-identity/pkg/identity/domain"
+	"github.com/uptrace/bun"
 )
 
 type PasswordPolicy struct {
@@ -95,4 +96,20 @@ func (IPBinding) Validate(record domain.SessionRecord, meta domain.RequestMeta) 
 		return domain.ErrBindingMismatch
 	}
 	return nil
+}
+
+type UnitOfWork interface {
+	Users() domain.UserRepository
+	Passwords() domain.PasswordRepository
+	Sessions() domain.SessionRepository
+	Authorization() domain.AuthorizationRepository
+}
+
+type TxManager interface {
+	WithinTx(context.Context, func(context.Context, UnitOfWork) error) error
+}
+
+type TxManagerWithDB interface {
+	TxManager
+	WithinTxDB(context.Context, func(context.Context, bun.IDB, UnitOfWork) error) error
 }

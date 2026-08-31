@@ -11,18 +11,63 @@ import (
 	"unicode/utf8"
 	"uuid"
 
-	"github.com/uptrace/bun"
 	"golang.org/x/text/cases"
 	"golang.org/x/text/unicode/norm"
 )
 
 // IDs are UUID values, never opaque strings. All IDs created by identity are
 // UUIDv7; the validation helpers reject other UUID versions at the boundary.
-type UserID = uuid.UUID
-type SessionID = uuid.UUID
-type RoleID = uuid.UUID
-type PermissionID = uuid.UUID
+type UserID uuid.UUID
+type SessionID uuid.UUID
+type RoleID uuid.UUID
+type PermissionID uuid.UUID
 type State string
+
+func (id UserID) String() string       { return uuid.UUID(id).String() }
+func (id SessionID) String() string    { return uuid.UUID(id).String() }
+func (id RoleID) String() string       { return uuid.UUID(id).String() }
+func (id PermissionID) String() string { return uuid.UUID(id).String() }
+
+func (id UserID) MarshalText() ([]byte, error)       { return []byte(id.String()), nil }
+func (id SessionID) MarshalText() ([]byte, error)    { return []byte(id.String()), nil }
+func (id RoleID) MarshalText() ([]byte, error)       { return []byte(id.String()), nil }
+func (id PermissionID) MarshalText() ([]byte, error) { return []byte(id.String()), nil }
+
+func (id *UserID) UnmarshalText(raw []byte) error {
+	parsed, err := ParseUserID(string(raw))
+	if err != nil {
+		return err
+	}
+	*id = parsed
+	return nil
+}
+
+func (id *SessionID) UnmarshalText(raw []byte) error {
+	parsed, err := ParseSessionID(string(raw))
+	if err != nil {
+		return err
+	}
+	*id = parsed
+	return nil
+}
+
+func (id *RoleID) UnmarshalText(raw []byte) error {
+	parsed, err := ParseRoleID(string(raw))
+	if err != nil {
+		return err
+	}
+	*id = parsed
+	return nil
+}
+
+func (id *PermissionID) UnmarshalText(raw []byte) error {
+	parsed, err := ParsePermissionID(string(raw))
+	if err != nil {
+		return err
+	}
+	*id = parsed
+	return nil
+}
 
 const (
 	StateActive   State = "active"
@@ -30,8 +75,8 @@ const (
 )
 
 func NormalizeUserID(id UserID) (UserID, error) {
-	if !isUUIDv7(id) {
-		return uuid.Nil(), ErrInvalidUser
+	if !isUUIDv7(uuid.UUID(id)) {
+		return UserID(uuid.Nil()), ErrInvalidUser
 	}
 	return id, nil
 }
@@ -44,20 +89,20 @@ func ValidateUserID(id UserID) error {
 func ParseUserID(raw string) (UserID, error) {
 	id, err := uuid.Parse(strings.TrimSpace(raw))
 	if err != nil {
-		return uuid.Nil(), ErrInvalidUser
+		return UserID(uuid.Nil()), ErrInvalidUser
 	}
-	return NormalizeUserID(id)
+	return NormalizeUserID(UserID(id))
 }
 
 func NormalizeSessionID(id SessionID) (SessionID, error) {
-	if !isUUIDv7(id) {
-		return uuid.Nil(), ErrInvalid
+	if !isUUIDv7(uuid.UUID(id)) {
+		return SessionID(uuid.Nil()), ErrInvalid
 	}
 	return id, nil
 }
 
 func isUUIDv7(id uuid.UUID) bool {
-	return id != uuid.Nil() && id[6]>>4 == 7
+	return id != uuid.Nil() && id[6]>>4 == 7 && id[8]&0xc0 == 0x80
 }
 
 func ValidateSessionID(id SessionID) error {
@@ -68,21 +113,21 @@ func ValidateSessionID(id SessionID) error {
 func ParseSessionID(raw string) (SessionID, error) {
 	id, err := uuid.Parse(strings.TrimSpace(raw))
 	if err != nil {
-		return uuid.Nil(), ErrInvalid
+		return SessionID(uuid.Nil()), ErrInvalid
 	}
-	return NormalizeSessionID(id)
+	return NormalizeSessionID(SessionID(id))
 }
 
 func NormalizeRoleID(id RoleID) (RoleID, error) {
-	if !isUUIDv7(id) {
-		return uuid.Nil(), ErrInvalid
+	if !isUUIDv7(uuid.UUID(id)) {
+		return RoleID(uuid.Nil()), ErrInvalid
 	}
 	return id, nil
 }
 
 func NormalizePermissionID(id PermissionID) (PermissionID, error) {
-	if !isUUIDv7(id) {
-		return uuid.Nil(), ErrInvalid
+	if !isUUIDv7(uuid.UUID(id)) {
+		return PermissionID(uuid.Nil()), ErrInvalid
 	}
 	return id, nil
 }
@@ -95,6 +140,22 @@ func ValidateRoleID(id RoleID) error {
 func ValidatePermissionID(id PermissionID) error {
 	_, err := NormalizePermissionID(id)
 	return err
+}
+
+func ParseRoleID(raw string) (RoleID, error) {
+	id, err := uuid.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return RoleID(uuid.Nil()), ErrInvalid
+	}
+	return NormalizeRoleID(RoleID(id))
+}
+
+func ParsePermissionID(raw string) (PermissionID, error) {
+	id, err := uuid.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return PermissionID(uuid.Nil()), ErrInvalid
+	}
+	return NormalizePermissionID(PermissionID(id))
 }
 
 // Authorizer action names are stable integration points for host applications.
@@ -133,7 +194,7 @@ type User struct {
 }
 
 func (u *User) Active() bool {
-	return u != nil && u.ID != uuid.Nil() && u.State == StateActive && u.DisabledAt == nil
+	return u != nil && u.ID != (UserID{}) && u.State == StateActive && u.DisabledAt == nil
 }
 
 type Claims struct {
@@ -214,9 +275,15 @@ func (f EventSinkFunc) Record(ctx context.Context, event Event) {
 	}
 }
 
+type LoginAttempt struct {
+	Username    string
+	UsernameKey string
+	RequestMeta RequestMeta
+}
+
 type LoginGuard interface {
-	Allow(context.Context, string, RequestMeta) error
-	Record(context.Context, string, RequestMeta, bool)
+	Allow(context.Context, LoginAttempt) error
+	Record(context.Context, LoginAttempt, bool)
 }
 
 type UserCreate struct {
@@ -408,29 +475,10 @@ type AuthorizationRepository interface {
 	UpdatePermission(context.Context, PermissionID, PermissionInput, time.Time) (*Permission, error)
 	DeletePermission(context.Context, PermissionID) error
 	ListUserRoles(context.Context, UserID) ([]Role, error)
-	ReplaceUserRoles(context.Context, UserID, []RoleID) error
+	ReplaceUserRoles(context.Context, UserID, []RoleID, time.Time) error
 	ListRolePermissions(context.Context, RoleID) ([]Permission, error)
-	ReplaceRolePermissions(context.Context, RoleID, []PermissionID) error
+	ReplaceRolePermissions(context.Context, RoleID, []PermissionID, time.Time) error
 	ListUserClaims(context.Context, UserID) (Claims, error)
-}
-
-type UnitOfWork interface {
-	Users() UserRepository
-	Passwords() PasswordRepository
-	Sessions() SessionRepository
-	Authorization() AuthorizationRepository
-}
-
-type TxManager interface {
-	WithinTx(context.Context, func(context.Context, UnitOfWork) error) error
-}
-
-// TxManagerWithDB is implemented by Bun-backed transaction managers that can
-// expose the active transaction to host-owned delete participants. The plain
-// TxManager contract remains sufficient for identity-only operations.
-type TxManagerWithDB interface {
-	TxManager
-	WithinTxDB(context.Context, func(context.Context, bun.IDB, UnitOfWork) error) error
 }
 
 type UserDirectory interface {

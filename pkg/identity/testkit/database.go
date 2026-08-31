@@ -22,6 +22,7 @@ func NewSQLite(t testing.TB) *bun.DB {
 	if err != nil {
 		t.Fatal(err)
 	}
+	dbsql.SetMaxOpenConns(1)
 	db := bun.NewDB(dbsql, sqlitedialect.New())
 	t.Cleanup(func() { _ = db.Close(); _ = dbsql.Close() })
 	if err := identity.ApplySchema(context.Background(), db); err != nil {

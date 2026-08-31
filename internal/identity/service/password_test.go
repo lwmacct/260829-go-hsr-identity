@@ -137,7 +137,7 @@ func TestPasswordUpgradeDoesNotOverwriteConcurrentReset(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	userID := uuid.NewV7()
+	userID := domain.UserID(uuid.NewV7())
 	now := time.Unix(100, 0).UTC()
 	repository := &passwordCASRepository{
 		credential: domain.PasswordCredential{UserID: userID, Scheme: legacy.Scheme(), Hash: oldHash, PasswordChangedAt: now, CreatedAt: now, UpdatedAt: now},

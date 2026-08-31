@@ -129,6 +129,12 @@ func (s *Store) DeleteRole(ctx context.Context, id domain.RoleID) error {
 	if system {
 		return domain.ErrConflict
 	}
+	if _, err := s.db.NewDelete().Model((*RolePermissionModel)(nil)).Where("role_id = ?", id.String()).Exec(ctx); err != nil {
+		return err
+	}
+	if _, err := s.db.NewDelete().Model((*UserRoleModel)(nil)).Where("role_id = ?", id.String()).Exec(ctx); err != nil {
+		return err
+	}
 	res, err := s.db.NewDelete().Model((*RoleModel)(nil)).Where("id = ?", id.String()).Exec(ctx)
 	if err != nil {
 		return err
@@ -227,6 +233,9 @@ func (s *Store) DeletePermission(ctx context.Context, id domain.PermissionID) er
 	if system {
 		return domain.ErrConflict
 	}
+	if _, err := s.db.NewDelete().Model((*RolePermissionModel)(nil)).Where("permission_id = ?", id.String()).Exec(ctx); err != nil {
+		return err
+	}
 	res, err := s.db.NewDelete().Model((*PermissionModel)(nil)).Where("id = ?", id.String()).Exec(ctx)
 	if err != nil {
 		return err
@@ -253,14 +262,13 @@ func (s *Store) ListUserRoles(ctx context.Context, userID domain.UserID) ([]doma
 	return out, nil
 }
 
-func (s *Store) ReplaceUserRoles(ctx context.Context, userID domain.UserID, roleIDs []domain.RoleID) error {
+func (s *Store) ReplaceUserRoles(ctx context.Context, userID domain.UserID, roleIDs []domain.RoleID, now time.Time) error {
 	if _, err := s.db.NewDelete().Model((*UserRoleModel)(nil)).Where("user_id = ?", userID.String()).Exec(ctx); err != nil {
 		return err
 	}
 	if len(roleIDs) == 0 {
 		return nil
 	}
-	now := time.Now().UTC()
 	rows := make([]UserRoleModel, 0, len(roleIDs))
 	seen := make(map[domain.RoleID]struct{}, len(roleIDs))
 	for _, id := range roleIDs {
@@ -295,14 +303,13 @@ func (s *Store) ListRolePermissions(ctx context.Context, roleID domain.RoleID) (
 	return out, nil
 }
 
-func (s *Store) ReplaceRolePermissions(ctx context.Context, roleID domain.RoleID, permissionIDs []domain.PermissionID) error {
+func (s *Store) ReplaceRolePermissions(ctx context.Context, roleID domain.RoleID, permissionIDs []domain.PermissionID, now time.Time) error {
 	if _, err := s.db.NewDelete().Model((*RolePermissionModel)(nil)).Where("role_id = ?", roleID.String()).Exec(ctx); err != nil {
 		return err
 	}
 	if len(permissionIDs) == 0 {
 		return nil
 	}
-	now := time.Now().UTC()
 	rows := make([]RolePermissionModel, 0, len(permissionIDs))
 	seen := make(map[domain.PermissionID]struct{}, len(permissionIDs))
 	for _, id := range permissionIDs {
@@ -361,13 +368,13 @@ func (s *Store) ListUserClaims(ctx context.Context, userID domain.UserID) (domai
 }
 
 func roleFrom(m *RoleModel) domain.Role {
-	id, _ := uuid.Parse(m.ID)
-	return domain.Role{ID: id, Code: m.Code, Name: m.Name, Description: m.Description, System: m.System, CreatedAt: m.CreatedAt, UpdatedAt: m.UpdatedAt}
+	idRaw, _ := uuid.Parse(m.ID)
+	return domain.Role{ID: domain.RoleID(idRaw), Code: m.Code, Name: m.Name, Description: m.Description, System: m.System, CreatedAt: m.CreatedAt, UpdatedAt: m.UpdatedAt}
 }
 
 func permissionFrom(m *PermissionModel) domain.Permission {
-	id, _ := uuid.Parse(m.ID)
-	return domain.Permission{ID: id, Code: m.Code, Name: m.Name, Description: m.Description, System: m.System, CreatedAt: m.CreatedAt, UpdatedAt: m.UpdatedAt}
+	idRaw, _ := uuid.Parse(m.ID)
+	return domain.Permission{ID: domain.PermissionID(idRaw), Code: m.Code, Name: m.Name, Description: m.Description, System: m.System, CreatedAt: m.CreatedAt, UpdatedAt: m.UpdatedAt}
 }
 
 var _ domain.AuthorizationRepository = (*Store)(nil)

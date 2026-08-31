@@ -11,7 +11,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-	"uuid"
 
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/danielgtaylor/huma/v2/adapters/humago"
@@ -27,16 +26,14 @@ func testModule(t *testing.T) (*identity.Module, *bun.DB) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	sqlDB.SetMaxOpenConns(1)
 	t.Cleanup(func() { _ = sqlDB.Close() })
 	db := bun.NewDB(sqlDB, sqlitedialect.New())
 	t.Cleanup(func() { _ = db.Close() })
 	if err := identity.ApplySchema(context.Background(), db); err != nil {
 		t.Fatal(err)
 	}
-	if err := identity.ApplySchema(context.Background(), db); err != nil {
-		t.Fatal(err)
-	}
-	m, err := identity.New(identity.Options{DB: db, Clock: func() time.Time { return time.Unix(100, 0).UTC() }, Password: identity.PasswordOptions{Policy: identity.PasswordPolicy{MinLength: 8, MaxLength: 64, RejectUsername: true}}, Session: identity.SessionOptions{Binding: identity.IPBinding{}}, HTTP: identity.HTTPOptions{RegistrationEnabled: true}})
+	m, err := identity.New(identity.Options{DB: db, Clock: func() time.Time { return time.Unix(100, 0).UTC() }, Password: identity.PasswordOptions{Policy: identity.PasswordPolicy{MinLength: 8, MaxLength: 64, RejectUsername: true}}, Session: identity.SessionOptions{Binding: identity.IPBinding{}}, HTTP: identity.HTTPOptions{LoginEnabled: true, RegistrationEnabled: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,7 +60,7 @@ func TestModuleLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if issued.Token == "" || issued.Session.ID == uuid.Nil() {
+	if issued.Token == "" || issued.Session.ID == (identity.SessionID{}) {
 		t.Fatalf("issued session = %#v", issued)
 	}
 	p, err := m.ResolveSession(ctx, issued.Token, identity.RequestMeta{ClientIP: "127.0.0.1", UserAgent: "test"})
@@ -458,6 +455,114 @@ func TestHumaRoutes(t *testing.T) {
 	}
 }
 
+func TestSessionManagementHTTPRoutes(t *testing.T) {
+	m, _ := testModule(t)
+	ctx := context.Background()
+	user, err := m.RegisterUser(ctx, identity.UserCreateInput{Username: "session-routes"}, "correct horse")
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta := identity.RequestMeta{ClientIP: "127.0.0.1"}
+	first, err := m.CreateSession(ctx, user.ID, meta)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := m.CreateSession(ctx, user.ID, meta)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	mux := http.NewServeMux()
+	api := humago.New(mux, huma.DefaultConfig("test", "1.0.0"))
+	m.Register(api)
+
+	list := httptest.NewRequest(http.MethodGet, "/auth/sessions", nil)
+	list.RemoteAddr = "127.0.0.1:12345"
+	list.Header.Set("Authorization", "Bearer "+first.Token)
+	listRes := httptest.NewRecorder()
+	mux.ServeHTTP(listRes, list)
+	if listRes.Code != http.StatusOK {
+		t.Fatalf("session list status = %d body = %s", listRes.Code, listRes.Body.String())
+	}
+	var listed struct {
+		Items []struct {
+			ID      string `json:"id"`
+			Current bool   `json:"current"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(listRes.Body.Bytes(), &listed); err != nil {
+		t.Fatal(err)
+	}
+	if len(listed.Items) != 2 {
+		t.Fatalf("session list = %#v", listed)
+	}
+	current := 0
+	for _, item := range listed.Items {
+		if item.Current {
+			current++
+		}
+	}
+	if current != 1 {
+		t.Fatalf("current sessions = %d, want 1", current)
+	}
+
+	ambiguous := httptest.NewRequest(http.MethodGet, "/auth/session", nil)
+	ambiguous.RemoteAddr = "127.0.0.1:12345"
+	ambiguous.Header.Set("Cookie", "identity_session="+first.Token)
+	ambiguous.Header.Set("Authorization", "Bearer "+second.Token)
+	ambiguousRes := httptest.NewRecorder()
+	mux.ServeHTTP(ambiguousRes, ambiguous)
+	if ambiguousRes.Code != http.StatusUnauthorized {
+		t.Fatalf("ambiguous credentials status = %d body = %s", ambiguousRes.Code, ambiguousRes.Body.String())
+	}
+
+	revoke := httptest.NewRequest(http.MethodDelete, "/auth/sessions/"+second.Session.ID.String(), nil)
+	revoke.RemoteAddr = "127.0.0.1:12345"
+	revoke.Header.Set("Authorization", "Bearer "+first.Token)
+	revokeRes := httptest.NewRecorder()
+	mux.ServeHTTP(revokeRes, revoke)
+	if revokeRes.Code != http.StatusNoContent {
+		t.Fatalf("session revoke status = %d body = %s", revokeRes.Code, revokeRes.Body.String())
+	}
+	if _, err := m.ResolveSession(ctx, second.Token, meta); !errors.Is(err, identity.ErrRevoked) {
+		t.Fatalf("revoked session error = %v", err)
+	}
+}
+
+func TestLoginCanBeDisabledAtHTTPBoundary(t *testing.T) {
+	_, db := testModule(t)
+	m, err := identity.New(identity.Options{
+		DB:       db,
+		Password: identity.PasswordOptions{Policy: identity.PasswordPolicy{MinLength: 8}},
+		HTTP:     identity.HTTPOptions{LoginEnabled: false, RegistrationEnabled: true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	api := humago.New(mux, huma.DefaultConfig("test", "1.0.0"))
+	m.Register(api)
+	req := httptest.NewRequest(http.MethodPost, "/auth/login", strings.NewReader(`{"username":"nobody","password":"correct horse"}`))
+	req.Header.Set("Content-Type", "application/json")
+	res := httptest.NewRecorder()
+	mux.ServeHTTP(res, req)
+	if res.Code != http.StatusForbidden {
+		t.Fatalf("disabled login status = %d body = %s", res.Code, res.Body.String())
+	}
+}
+
+func TestModuleRejectsInsecureSameSiteNoneCookies(t *testing.T) {
+	_, db := testModule(t)
+	_, err := identity.New(identity.Options{
+		DB:       db,
+		HTTP:     identity.HTTPOptions{LoginEnabled: true, SameSite: http.SameSiteNoneMode},
+		Password: identity.PasswordOptions{Policy: identity.PasswordPolicy{MinLength: 8}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "SameSite=None") {
+		t.Fatalf("insecure SameSite=None error = %v", err)
+	}
+}
+
 type testHumanChallengeProvider struct{}
 
 func (testHumanChallengeProvider) Name() string { return "image" }
@@ -488,16 +593,20 @@ func TestHumanChallengeRoutesAndModuleContract(t *testing.T) {
 		DB:       db,
 		Password: identity.PasswordOptions{Policy: identity.PasswordPolicy{MinLength: 8}},
 		HTTP: identity.HTTPOptions{
+			LoginEnabled:        true,
 			RegistrationEnabled: true,
-			ChallengeProvider:   testHumanChallengeProvider{},
-			RequireChallenge:    true,
+			Challenge: identity.HTTPChallengeOptions{
+				Verifier:              testHumanChallengeProvider{},
+				RequireOnLogin:        true,
+				RequireOnRegistration: true,
+			},
 		},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	if got := m.ChallengeConfig(); !got.Required || got.Provider != "image" {
+	if got := m.ChallengeConfig(); got.Provider != "image" {
 		t.Fatalf("challenge config = %#v", got)
 	}
 	if err := m.VerifyChallenge(context.Background(), identity.HumanChallengeResponse{Provider: "turnstile", Token: "ok"}, identity.RequestMeta{}); !errors.Is(err, identity.ErrHumanChallengeInvalid) {
@@ -515,16 +624,18 @@ func TestHumanChallengeRoutesAndModuleContract(t *testing.T) {
 		t.Fatalf("config status = %d body = %s", configRes.Code, configRes.Body.String())
 	}
 	var configBody struct {
+		LoginEnabled        bool `json:"loginEnabled"`
 		RegistrationEnabled bool `json:"registrationEnabled"`
 		Challenge           struct {
-			Provider string `json:"provider"`
-			Required bool   `json:"required"`
+			Provider              string `json:"provider"`
+			RequireOnLogin        bool   `json:"requireOnLogin"`
+			RequireOnRegistration bool   `json:"requireOnRegistration"`
 		} `json:"challenge"`
 	}
 	if err := json.Unmarshal(configRes.Body.Bytes(), &configBody); err != nil {
 		t.Fatal(err)
 	}
-	if !configBody.RegistrationEnabled || configBody.Challenge.Provider != "image" || !configBody.Challenge.Required {
+	if !configBody.LoginEnabled || !configBody.RegistrationEnabled || configBody.Challenge.Provider != "image" || !configBody.Challenge.RequireOnLogin || !configBody.Challenge.RequireOnRegistration {
 		t.Fatalf("config body = %#v", configBody)
 	}
 
@@ -653,14 +764,16 @@ type testLoginGuard struct {
 	allowErr error
 	allowed  int
 	records  []bool
+	attempts []identity.LoginAttempt
 }
 
-func (g *testLoginGuard) Allow(context.Context, string, identity.RequestMeta) error {
+func (g *testLoginGuard) Allow(_ context.Context, attempt identity.LoginAttempt) error {
 	g.allowed++
+	g.attempts = append(g.attempts, attempt)
 	return g.allowErr
 }
 
-func (g *testLoginGuard) Record(_ context.Context, _ string, _ identity.RequestMeta, success bool) {
+func (g *testLoginGuard) Record(_ context.Context, _ identity.LoginAttempt, success bool) {
 	g.records = append(g.records, success)
 }
 
@@ -682,11 +795,14 @@ func TestLoginGuardRecordsCredentialOutcomes(t *testing.T) {
 	if _, _, err := m.Login(ctx, "guard-user", "wrong horse", identity.RequestMeta{}); !errors.Is(err, identity.ErrUnauthenticated) {
 		t.Fatalf("failed login error = %v", err)
 	}
-	if _, _, err := m.Login(ctx, "guard-user", "correct horse", identity.RequestMeta{}); err != nil {
+	if _, _, err := m.Login(ctx, "GUARD-USER", "correct horse", identity.RequestMeta{}); err != nil {
 		t.Fatal(err)
 	}
 	if guard.allowed != 2 || len(guard.records) != 2 || guard.records[0] || !guard.records[1] {
 		t.Fatalf("guard allowed=%d records=%v", guard.allowed, guard.records)
+	}
+	if len(guard.attempts) != 2 || guard.attempts[0].UsernameKey != guard.attempts[1].UsernameKey {
+		t.Fatalf("guard attempts = %#v", guard.attempts)
 	}
 }
 
@@ -867,6 +983,7 @@ func TestSessionCookieAttributes(t *testing.T) {
 		DB:       db,
 		Password: identity.PasswordOptions{Policy: identity.PasswordPolicy{MinLength: 8}},
 		HTTP: identity.HTTPOptions{
+			LoginEnabled:        true,
 			RegistrationEnabled: true,
 			CookiePath:          "/auth",
 			SecureCookie:        true,

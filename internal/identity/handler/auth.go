@@ -38,6 +38,29 @@ type sessionView struct {
 	ExpiresAt       timeValue `json:"expiresAt,omitzero"`
 }
 
+type sessionItemView struct {
+	ID            string     `json:"id" format:"uuid"`
+	UserID        string     `json:"userId" format:"uuid"`
+	LoginIP       string     `json:"loginIp,omitempty"`
+	LastIP        string     `json:"lastIp,omitempty"`
+	ExpiresAt     time.Time  `json:"expiresAt"`
+	CreatedAt     time.Time  `json:"createdAt"`
+	LastSeenAt    time.Time  `json:"lastSeenAt"`
+	RevokedAt     *time.Time `json:"revokedAt,omitempty"`
+	RevokedReason string     `json:"revokedReason,omitempty"`
+	Current       bool       `json:"current"`
+}
+
+type sessionListResponse struct {
+	Body struct {
+		Items []sessionItemView `json:"items"`
+	}
+}
+
+type sessionPathInput struct {
+	SessionID string `path:"sessionID" format:"uuid"`
+}
+
 // timeValue keeps the public response schema stable while allowing zero times
 // to be omitted by Huma's JSON encoder.
 type timeValue = time.Time
@@ -49,28 +72,46 @@ func (e *Endpoint) register(ctx context.Context, input *credentialsInput) (*sess
 	if err := requestMetaErrorFromContext(ctx); err != nil {
 		return nil, mapError(err, false)
 	}
-	if err := e.verifyChallenge(ctx, input.Body.Challenge); err != nil {
+	if err := e.verifyChallenge(ctx, input.Body.Challenge, e.config.RequireChallengeOnRegistration); err != nil {
 		return nil, mapError(err, false)
 	}
-	user, issued, err := e.services.Accounts.RegisterAndLogin(ctx, domain.UserCreateInput{Username: input.Body.Username}, input.Body.Password, requestMetaFromContext(ctx))
+	_, issued, err := e.services.Accounts.RegisterAndLogin(ctx, domain.UserCreateInput{Username: input.Body.Username}, input.Body.Password, requestMetaFromContext(ctx))
 	if err != nil {
 		return nil, mapError(err, false)
 	}
-	return &sessionResponse{SetCookie: e.cookie(issued.Token, issued.Session.ExpiresAt, false), Body: sessionViewFromPrincipal(&domain.Principal{Subject: user.ID, User: user, SessionID: issued.Session.ID, AuthenticatedAt: issued.Session.CreatedAt, ExpiresAt: issued.Session.ExpiresAt})}, nil
+	principal, err := e.resolveIssuedSession(ctx, issued, requestMetaFromContext(ctx))
+	if err != nil {
+		return nil, mapError(err, false)
+	}
+	return &sessionResponse{SetCookie: e.cookie(issued.Token, issued.Session.ExpiresAt, false), Body: sessionViewFromPrincipal(principal)}, nil
 }
 
 func (e *Endpoint) login(ctx context.Context, input *credentialsInput) (*sessionResponse, error) {
+	if !e.config.LoginEnabled {
+		return nil, huma.Error403Forbidden("login is disabled")
+	}
 	if err := requestMetaErrorFromContext(ctx); err != nil {
 		return nil, mapError(err, false)
 	}
-	if err := e.verifyChallenge(ctx, input.Body.Challenge); err != nil {
+	if err := e.verifyChallenge(ctx, input.Body.Challenge, e.config.RequireChallengeOnLogin); err != nil {
 		return nil, mapError(err, true)
 	}
-	user, issued, err := e.services.Accounts.Login(ctx, input.Body.Username, input.Body.Password, requestMetaFromContext(ctx))
+	_, issued, err := e.services.Accounts.Login(ctx, input.Body.Username, input.Body.Password, requestMetaFromContext(ctx))
 	if err != nil {
 		return nil, mapError(err, true)
 	}
-	return &sessionResponse{SetCookie: e.cookie(issued.Token, issued.Session.ExpiresAt, false), Body: sessionViewFromPrincipal(&domain.Principal{Subject: user.ID, User: user, SessionID: issued.Session.ID, AuthenticatedAt: issued.Session.CreatedAt, ExpiresAt: issued.Session.ExpiresAt})}, nil
+	principal, err := e.resolveIssuedSession(ctx, issued, requestMetaFromContext(ctx))
+	if err != nil {
+		return nil, mapError(err, true)
+	}
+	return &sessionResponse{SetCookie: e.cookie(issued.Token, issued.Session.ExpiresAt, false), Body: sessionViewFromPrincipal(principal)}, nil
+}
+
+func (e *Endpoint) resolveIssuedSession(ctx context.Context, issued *domain.IssuedSession, meta domain.RequestMeta) (*domain.Principal, error) {
+	if issued == nil || issued.Session == nil || e.services.Sessions == nil {
+		return nil, domain.ErrUnauthenticated
+	}
+	return e.services.Sessions.Resolve(ctx, issued.Token, meta)
 }
 
 func (e *Endpoint) logout(ctx context.Context, _ *struct{}) (*sessionResponse, error) {
@@ -88,6 +129,59 @@ func (e *Endpoint) currentSession(ctx context.Context, _ *struct{}) (*struct{ Bo
 		return nil, huma.Error401Unauthorized("unauthorized")
 	}
 	return &struct{ Body sessionView }{Body: sessionViewFromPrincipal(p)}, nil
+}
+
+func (e *Endpoint) listSessions(ctx context.Context, _ *struct{}) (*sessionListResponse, error) {
+	p, ok := domain.PrincipalFromContext(ctx)
+	if !ok || !p.Active() {
+		return nil, huma.Error401Unauthorized("unauthorized")
+	}
+	sessions, err := e.services.Sessions.ListForUser(ctx, p.Subject)
+	if err != nil {
+		return nil, mapError(err, false)
+	}
+	response := &sessionListResponse{}
+	response.Body.Items = make([]sessionItemView, len(sessions))
+	for i := range sessions {
+		session := sessions[i]
+		response.Body.Items[i] = sessionItemView{
+			ID:            session.ID.String(),
+			UserID:        session.UserID.String(),
+			LoginIP:       session.LoginIP,
+			LastIP:        session.LastIP,
+			ExpiresAt:     session.ExpiresAt,
+			CreatedAt:     session.CreatedAt,
+			LastSeenAt:    session.LastSeenAt,
+			RevokedAt:     session.RevokedAt,
+			RevokedReason: session.RevokedReason,
+			Current:       session.ID == p.SessionID,
+		}
+	}
+	return response, nil
+}
+
+func (e *Endpoint) revokeSession(ctx context.Context, input *sessionPathInput) (*noContent, error) {
+	p, ok := domain.PrincipalFromContext(ctx)
+	if !ok || !p.Active() {
+		return nil, huma.Error401Unauthorized("unauthorized")
+	}
+	id, err := domain.ParseSessionID(input.SessionID)
+	if err != nil {
+		return nil, mapError(err, false)
+	}
+	sessions, err := e.services.Sessions.ListForUser(ctx, p.Subject)
+	if err != nil {
+		return nil, mapError(err, false)
+	}
+	for _, session := range sessions {
+		if session.ID == id {
+			if err := e.services.Sessions.RevokeByID(ctx, id, "self_revoked"); err != nil {
+				return nil, mapError(err, false)
+			}
+			return &noContent{}, nil
+		}
+	}
+	return nil, huma.Error404NotFound("session not found")
 }
 
 func (e *Endpoint) changePassword(ctx context.Context, input *passwordInput) (*sessionResponse, error) {

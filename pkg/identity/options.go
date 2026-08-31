@@ -104,9 +104,23 @@ type AuthorizationOptions struct {
 	DefaultRoleCodes []string
 }
 
+type HTTPChallengeOptions struct {
+	// Verifier is required when either authentication flow enforces a challenge.
+	Verifier HumanChallengeVerifier
+	// Creator enables POST /auth/challenges. It can be omitted for remote-token
+	// providers whose challenge is created by the browser and verified remotely.
+	Creator               HumanChallengeCreator
+	RequireOnLogin        bool
+	RequireOnRegistration bool
+}
+
 type HTTPOptions struct {
-	AuthPrefix          string
-	AdminPrefix         string
+	AuthPrefix  string
+	AdminPrefix string
+	// LoginEnabled controls the password login endpoint.
+	LoginEnabled bool
+	// RegistrationEnabled controls public password registration and automatic
+	// Session issuance through the registration endpoint.
 	RegistrationEnabled bool
 	EnableAdminRoutes   bool
 	EnableRBACRoutes    bool
@@ -117,12 +131,7 @@ type HTTPOptions struct {
 	SameSite            http.SameSite
 	TokenExtractor      func(*http.Request) string
 	RequestMetaResolver RequestMetaResolver
-	// ChallengeProvider enables the public challenge endpoints. When
-	// RequireChallenge is true, login and registration require a valid
-	// response from this provider.
-	ChallengeProvider HumanChallengeVerifier
-	ChallengeCreator  HumanChallengeCreator
-	RequireChallenge  bool
+	Challenge           HTTPChallengeOptions
 }
 
 type Options struct {
@@ -157,6 +166,6 @@ func DefaultOptions() Options {
 	return Options{
 		Password: PasswordOptions{Policy: PasswordPolicy{MinLength: 12, MaxLength: 128, RejectUsername: true, RejectCommon: true}},
 		Session:  SessionOptions{TTL: 30 * 24 * time.Hour, TouchInterval: 5 * time.Minute, TokenBytes: 32, Binding: NoBinding{}},
-		HTTP:     HTTPOptions{AuthPrefix: "/auth", AdminPrefix: "/admin", CookieName: "identity_session", CookiePath: "/", SameSite: http.SameSiteLaxMode},
+		HTTP:     HTTPOptions{AuthPrefix: "/auth", AdminPrefix: "/admin", LoginEnabled: true, CookieName: "identity_session", CookiePath: "/", SameSite: http.SameSiteLaxMode},
 	}
 }

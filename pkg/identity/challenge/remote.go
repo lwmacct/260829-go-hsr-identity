@@ -3,6 +3,7 @@ package challenge
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -102,20 +103,23 @@ func (p *RemoteTokenProvider) Verify(ctx context.Context, response domain.HumanC
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, p.verifyURL, strings.NewReader(form.Encode()))
 	if err != nil {
-		return err
+		return fmt.Errorf("%w: %v", domain.ErrHumanChallengeUnsupported, err)
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	resp, err := p.client.Do(req)
 	if err != nil {
-		return err
+		return fmt.Errorf("%w: %v", domain.ErrHumanChallengeUnavailable, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= http.StatusInternalServerError {
+			return domain.ErrHumanChallengeUnavailable
+		}
 		return domain.ErrHumanChallengeInvalid
 	}
 	data, err := io.ReadAll(io.LimitReader(resp.Body, p.maxBytes+1))
 	if err != nil {
-		return err
+		return fmt.Errorf("%w: %v", domain.ErrHumanChallengeUnavailable, err)
 	}
 	if int64(len(data)) > p.maxBytes {
 		return domain.ErrHumanChallengeInvalid
@@ -126,7 +130,7 @@ func (p *RemoteTokenProvider) Verify(ctx context.Context, response domain.HumanC
 		Action   string `json:"action"`
 	}
 	if err := json.Unmarshal(data, &body); err != nil {
-		return err
+		return fmt.Errorf("%w: %v", domain.ErrHumanChallengeUnavailable, err)
 	}
 	if !body.Success {
 		return domain.ErrHumanChallengeInvalid

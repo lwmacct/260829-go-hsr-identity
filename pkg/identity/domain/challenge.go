@@ -11,10 +11,6 @@ import (
 type HumanChallengeConfig struct {
 	Provider string
 	SiteKey  string
-	// Required indicates whether the identity HTTP login and registration
-	// endpoints require a valid response. Hosts may still use a configured
-	// provider for their own protected actions when this is false.
-	Required bool
 }
 
 // HumanChallenge is a challenge instance returned to a client. Image-based
@@ -46,8 +42,6 @@ type HumanChallengeVerifier interface {
 // HumanChallengeCreator is implemented by providers that issue a challenge
 // instance (for example the built-in image provider).
 type HumanChallengeCreator interface {
-	Name() string
-	PublicConfig() HumanChallengeConfig
 	Create(context.Context, RequestMeta) (*HumanChallenge, error)
 }
 
@@ -60,6 +54,7 @@ type HumanChallengeProvider interface {
 
 var (
 	ErrHumanChallengeInvalid       = errors.New("invalid human challenge")
+	ErrHumanChallengeUnavailable   = errors.New("human challenge provider unavailable")
 	ErrHumanChallengeUnsupported   = errors.New("human challenge provider unsupported")
 	ErrHumanChallengeLimitExceeded = errors.New("human challenge limit exceeded")
 )

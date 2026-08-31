@@ -19,14 +19,14 @@ type UserDeleteParticipant func(context.Context, bun.IDB, []domain.User) error
 
 type UserService struct {
 	repo              domain.UserRepository
-	tx                domain.TxManager
+	tx                TxManager
 	username          domain.UsernamePolicy
 	now               domain.Clock
 	events            domain.EventSink
 	deleteParticipant UserDeleteParticipant
 }
 
-func NewUserService(repo domain.UserRepository, tx domain.TxManager, username domain.UsernamePolicy, now domain.Clock) (*UserService, error) {
+func NewUserService(repo domain.UserRepository, tx TxManager, username domain.UsernamePolicy, now domain.Clock) (*UserService, error) {
 	if repo == nil {
 		return nil, errors.New("identity: user repository is required")
 	}
@@ -67,7 +67,7 @@ func (s *UserService) Create(ctx context.Context, in UserCreateInput) (*domain.U
 	if state != domain.StateActive && state != domain.StateDisabled {
 		return nil, domain.ErrInvalidState
 	}
-	id := uuid.NewV7()
+	id := domain.UserID(uuid.NewV7())
 	now := s.now().UTC()
 	var disabled *time.Time
 	if state == domain.StateDisabled {
@@ -152,7 +152,7 @@ func (s *UserService) SetState(ctx context.Context, ids []domain.UserID, state d
 	if s.tx == nil {
 		return errors.New("identity: transaction manager is required for state changes")
 	}
-	err = s.tx.WithinTx(ctx, func(c context.Context, u domain.UnitOfWork) error {
+	err = s.tx.WithinTx(ctx, func(c context.Context, u UnitOfWork) error {
 		updated, e := u.Users().UpdateUserState(c, ids, state, disabled, now)
 		if e != nil {
 			return e
@@ -193,9 +193,9 @@ func (s *UserService) DeleteUsers(ctx context.Context, ids []domain.UserID) erro
 	if s.tx == nil {
 		return errors.New("identity: transaction manager is required for deleting users")
 	}
-	if participantTx, ok := s.tx.(domain.TxManagerWithDB); ok {
+	if participantTx, ok := s.tx.(TxManagerWithDB); ok {
 		var deleted []domain.User
-		err := participantTx.WithinTxDB(ctx, func(c context.Context, db bun.IDB, u domain.UnitOfWork) error {
+		err := participantTx.WithinTxDB(ctx, func(c context.Context, db bun.IDB, u UnitOfWork) error {
 			users := make([]domain.User, 0, len(ids))
 			for _, id := range ids {
 				user, err := u.Users().GetUser(c, id)
@@ -222,7 +222,7 @@ func (s *UserService) DeleteUsers(ctx context.Context, ids []domain.UserID) erro
 	if s.deleteParticipant != nil {
 		return errors.New("identity: delete participant requires a transaction manager with database access")
 	}
-	err = s.tx.WithinTx(ctx, func(c context.Context, u domain.UnitOfWork) error {
+	err = s.tx.WithinTx(ctx, func(c context.Context, u UnitOfWork) error {
 		return deleteUsersInUnit(c, u, ids)
 	})
 	if err == nil {
@@ -234,13 +234,7 @@ func (s *UserService) DeleteUsers(ctx context.Context, ids []domain.UserID) erro
 	return err
 }
 
-func deleteUsersInUnit(c context.Context, u domain.UnitOfWork, ids []domain.UserID) error {
-	if e := u.Sessions().DeleteSessionsForUsers(c, ids); e != nil {
-		return e
-	}
-	if e := u.Passwords().DeletePasswordCredentials(c, ids); e != nil {
-		return e
-	}
+func deleteUsersInUnit(c context.Context, u UnitOfWork, ids []domain.UserID) error {
 	return u.Users().DeleteUsers(c, ids)
 }
 

@@ -285,6 +285,19 @@ func (s *PasswordService) Validate(username, value string) error {
 	}
 	return nil
 }
+
+func (s *PasswordService) NormalizeUsername(value string) (string, error) {
+	if s == nil || s.username == nil {
+		return "", domain.ErrInvalidUsername
+	}
+	return s.username.Normalize(value)
+}
+
+func (s *PasswordService) verifyDummy(value string) {
+	if s != nil && s.hasher != nil {
+		_ = s.hasher.Verify(s.dummyHash, value)
+	}
+}
 func (s *PasswordService) Hash(value string) (string, error) {
 	if s == nil || s.hasher == nil {
 		return "", errors.New("identity: password service is not configured")
@@ -303,11 +316,16 @@ func (s *PasswordService) AuthenticateUser(ctx context.Context, id domain.UserID
 	c, e := s.credentials.GetPasswordCredential(ctx, id)
 	if e != nil {
 		if errors.Is(e, domain.ErrNotFound) {
+			s.verifyDummy(value)
 			return domain.ErrUnauthenticated
 		}
+		s.verifyDummy(value)
 		return e
 	}
 	if c == nil || !s.verifyCredential(c, value) {
+		if c == nil || c.Scheme != s.hasher.Scheme() {
+			s.verifyDummy(value)
+		}
 		return domain.ErrUnauthenticated
 	}
 	if s.needsCredentialRehash(c) {
@@ -378,6 +396,7 @@ func (s *PasswordService) Authenticate(ctx context.Context, username, value stri
 	}
 	norm, e := s.username.Normalize(username)
 	if e != nil {
+		s.verifyDummy(value)
 		return nil, domain.ErrUnauthenticated
 	}
 	u, e := s.users.UserByUsername(ctx, norm)
@@ -389,6 +408,7 @@ func (s *PasswordService) Authenticate(ctx context.Context, username, value stri
 		return nil, e
 	}
 	if u == nil || !u.Active() {
+		s.verifyDummy(value)
 		return nil, domain.ErrUnauthenticated
 	}
 	if e := s.AuthenticateUser(ctx, u.ID, value); e != nil {

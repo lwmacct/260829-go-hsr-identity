@@ -7,12 +7,14 @@ import (
 )
 
 type humanChallengeConfigView struct {
-	Provider string `json:"provider"`
-	SiteKey  string `json:"sitekey,omitempty"`
-	Required bool   `json:"required"`
+	Provider              string `json:"provider"`
+	SiteKey               string `json:"sitekey,omitempty"`
+	RequireOnLogin        bool   `json:"requireOnLogin"`
+	RequireOnRegistration bool   `json:"requireOnRegistration"`
 }
 
 type configView struct {
+	LoginEnabled        bool                      `json:"loginEnabled"`
 	RegistrationEnabled bool                      `json:"registrationEnabled"`
 	Challenge           *humanChallengeConfigView `json:"challenge,omitempty"`
 }

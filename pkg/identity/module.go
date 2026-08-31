@@ -3,6 +3,7 @@ package identity
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -16,23 +17,45 @@ import (
 )
 
 type Module struct {
-	users             *service.UserService
-	password          *service.PasswordService
-	session           *service.SessionService
-	authorization     *service.AuthorizationService
-	account           *service.AccountService
-	challenge         HumanChallengeVerifier
-	challengeCreator  HumanChallengeCreator
-	challengeRequired bool
-	handler           *handler.Endpoint
+	users            *service.UserService
+	password         *service.PasswordService
+	session          *service.SessionService
+	authorization    *service.AuthorizationService
+	account          *service.AccountService
+	challenge        HumanChallengeVerifier
+	challengeCreator HumanChallengeCreator
+	handler          *handler.Endpoint
 }
 
 func New(options Options) (*Module, error) {
 	if options.DB == nil {
 		return nil, errors.New("identity: database is required")
 	}
-	if options.HTTP.RequireChallenge && options.HTTP.ChallengeProvider == nil {
-		return nil, errors.New("identity: challenge provider is required when challenge enforcement is enabled")
+	if options.HTTP.SameSite == http.SameSiteNoneMode && !options.HTTP.SecureCookie {
+		return nil, errors.New("identity: SameSite=None cookies require SecureCookie")
+	}
+	if options.HTTP.CookiePath != "" && !strings.HasPrefix(options.HTTP.CookiePath, "/") {
+		return nil, errors.New("identity: cookie path must start with /")
+	}
+	if err := ValidateSchema(context.Background(), options.DB); err != nil {
+		return nil, fmt.Errorf("identity: validate database schema: %w", err)
+	}
+	if (options.HTTP.Challenge.RequireOnLogin || options.HTTP.Challenge.RequireOnRegistration) && options.HTTP.Challenge.Verifier == nil {
+		return nil, errors.New("identity: challenge verifier is required when challenge enforcement is enabled")
+	}
+	if verifier := options.HTTP.Challenge.Verifier; verifier != nil {
+		name := strings.TrimSpace(verifier.Name())
+		public := verifier.PublicConfig()
+		if name == "" || strings.TrimSpace(public.Provider) == "" || strings.TrimSpace(public.Provider) != name {
+			return nil, errors.New("identity: challenge verifier must expose a stable provider name")
+		}
+	}
+	if options.HTTP.Challenge.Verifier != nil && options.HTTP.Challenge.Creator != nil {
+		verifierName := strings.TrimSpace(options.HTTP.Challenge.Verifier.Name())
+		creatorName := challengeCreatorName(options.HTTP.Challenge.Creator)
+		if verifierName == "" || (creatorName != "" && verifierName != creatorName) {
+			return nil, errors.New("identity: challenge verifier and creator providers must match")
+		}
 	}
 	now := options.Clock
 	if now == nil {
@@ -122,29 +145,31 @@ func New(options Options) (*Module, error) {
 		}
 		return nil
 	}
-	creator := options.HTTP.ChallengeCreator
+	creator := options.HTTP.Challenge.Creator
 	if creator == nil {
-		creator, _ = options.HTTP.ChallengeProvider.(HumanChallengeCreator)
+		creator, _ = options.HTTP.Challenge.Verifier.(HumanChallengeCreator)
 	}
 	endpoint := handler.NewEndpoint(handler.Config{
-		AuthPrefix:          options.HTTP.AuthPrefix,
-		AdminPrefix:         options.HTTP.AdminPrefix,
-		RegistrationEnabled: options.HTTP.RegistrationEnabled,
-		EnableAdminRoutes:   options.HTTP.EnableAdminRoutes,
-		EnableRBACRoutes:    options.HTTP.EnableRBACRoutes,
-		CookieName:          options.HTTP.CookieName,
-		CookiePath:          options.HTTP.CookiePath,
-		CookieDomain:        options.HTTP.CookieDomain,
-		SecureCookie:        options.HTTP.SecureCookie,
-		SameSite:            options.HTTP.SameSite,
-		TokenExtractor:      options.HTTP.TokenExtractor,
-		RequestMetaResolver: options.HTTP.RequestMetaResolver,
-		ChallengeVerifier:   options.HTTP.ChallengeProvider,
-		ChallengeCreator:    creator,
-		RequireChallenge:    options.HTTP.RequireChallenge,
-		Authorizer:          authorizer,
+		AuthPrefix:                     options.HTTP.AuthPrefix,
+		AdminPrefix:                    options.HTTP.AdminPrefix,
+		LoginEnabled:                   options.HTTP.LoginEnabled,
+		RegistrationEnabled:            options.HTTP.RegistrationEnabled,
+		EnableAdminRoutes:              options.HTTP.EnableAdminRoutes,
+		EnableRBACRoutes:               options.HTTP.EnableRBACRoutes,
+		CookieName:                     options.HTTP.CookieName,
+		CookiePath:                     options.HTTP.CookiePath,
+		CookieDomain:                   options.HTTP.CookieDomain,
+		SecureCookie:                   options.HTTP.SecureCookie,
+		SameSite:                       options.HTTP.SameSite,
+		TokenExtractor:                 options.HTTP.TokenExtractor,
+		RequestMetaResolver:            options.HTTP.RequestMetaResolver,
+		ChallengeVerifier:              options.HTTP.Challenge.Verifier,
+		ChallengeCreator:               creator,
+		RequireChallengeOnLogin:        options.HTTP.Challenge.RequireOnLogin,
+		RequireChallengeOnRegistration: options.HTTP.Challenge.RequireOnRegistration,
+		Authorizer:                     authorizer,
 	}, handler.Services{Users: users, Passwords: password, Sessions: session, Accounts: account, Authorization: authorization})
-	return &Module{users: users, password: password, session: session, authorization: authorization, account: account, challenge: options.HTTP.ChallengeProvider, challengeCreator: creator, challengeRequired: options.HTTP.RequireChallenge, handler: endpoint}, nil
+	return &Module{users: users, password: password, session: session, authorization: authorization, account: account, challenge: options.HTTP.Challenge.Verifier, challengeCreator: creator, handler: endpoint}, nil
 }
 
 func MustNew(options Options) *Module {
@@ -237,9 +262,7 @@ func (m *Module) ChallengeConfig() HumanChallengeConfig {
 	if m == nil || m.challenge == nil {
 		return HumanChallengeConfig{}
 	}
-	config := m.challenge.PublicConfig()
-	config.Required = m.challengeRequired
-	return config
+	return m.challenge.PublicConfig()
 }
 
 // CreateChallenge creates a provider-specific challenge for a client.
@@ -247,7 +270,20 @@ func (m *Module) CreateChallenge(ctx context.Context, meta RequestMeta) (*HumanC
 	if m == nil || m.challengeCreator == nil {
 		return nil, ErrHumanChallengeUnsupported
 	}
-	return m.challengeCreator.Create(ctx, meta)
+	challenge, err := m.challengeCreator.Create(ctx, meta)
+	if err != nil {
+		return nil, err
+	}
+	if challenge == nil {
+		return nil, ErrHumanChallengeUnsupported
+	}
+	if strings.TrimSpace(challenge.Provider) == "" {
+		return nil, ErrHumanChallengeUnsupported
+	}
+	if m.challenge != nil && strings.TrimSpace(challenge.Provider) != strings.TrimSpace(m.challenge.Name()) {
+		return nil, ErrHumanChallengeUnsupported
+	}
+	return challenge, nil
 }
 
 // VerifyChallenge validates a provider response. Hosts can use this for
@@ -260,9 +296,22 @@ func (m *Module) VerifyChallenge(ctx context.Context, response HumanChallengeRes
 		return ErrHumanChallengeInvalid
 	}
 	if err := m.challenge.Verify(ctx, response, meta); err != nil {
+		if errors.Is(err, ErrHumanChallengeUnavailable) {
+			return ErrHumanChallengeUnavailable
+		}
+		if errors.Is(err, ErrHumanChallengeUnsupported) {
+			return ErrHumanChallengeUnsupported
+		}
 		return ErrHumanChallengeInvalid
 	}
 	return nil
+}
+
+func challengeCreatorName(creator HumanChallengeCreator) string {
+	if named, ok := creator.(interface{ Name() string }); ok {
+		return strings.TrimSpace(named.Name())
+	}
+	return ""
 }
 func (m *Module) ResetPassword(ctx context.Context, userID UserID, next string) error {
 	return m.account.ResetPassword(ctx, userID, next)

@@ -14,7 +14,7 @@ import (
 type AuthorizationService struct {
 	repo         domain.AuthorizationRepository
 	users        domain.UserDirectory
-	tx           domain.TxManager
+	tx           TxManager
 	now          domain.Clock
 	defaultRoles []string
 	events       domain.EventSink
@@ -26,7 +26,7 @@ func (s *AuthorizationService) SetEventSink(sink domain.EventSink) {
 	}
 }
 
-func NewAuthorizationService(repo domain.AuthorizationRepository, users domain.UserDirectory, tx domain.TxManager, now domain.Clock, defaultRoles []string) (*AuthorizationService, error) {
+func NewAuthorizationService(repo domain.AuthorizationRepository, users domain.UserDirectory, tx TxManager, now domain.Clock, defaultRoles []string) (*AuthorizationService, error) {
 	if repo == nil {
 		return nil, errors.New("identity: authorization repository is required")
 	}
@@ -91,7 +91,7 @@ func (s *AuthorizationService) CreateRole(ctx context.Context, input domain.Role
 		return nil, err
 	}
 	now := s.now().UTC()
-	role, err := s.repo.CreateRole(ctx, domain.Role{ID: uuid.NewV7(), Code: normalized.Code, Name: normalized.Name, Description: normalized.Description, System: normalized.System, CreatedAt: now, UpdatedAt: now})
+	role, err := s.repo.CreateRole(ctx, domain.Role{ID: domain.RoleID(uuid.NewV7()), Code: normalized.Code, Name: normalized.Name, Description: normalized.Description, System: normalized.System, CreatedAt: now, UpdatedAt: now})
 	if err == nil {
 		emitEvent(ctx, s.events, domain.Event{Type: domain.EventRoleCreated, At: now, RoleID: role.ID, Attributes: map[string]string{"code": role.Code}})
 	}
@@ -104,7 +104,7 @@ func (s *AuthorizationService) EnsureRole(ctx context.Context, input domain.Role
 		return nil, err
 	}
 	now := s.now().UTC()
-	return s.repo.UpsertRole(ctx, domain.Role{ID: uuid.NewV7(), Code: normalized.Code, Name: normalized.Name, Description: normalized.Description, System: normalized.System, CreatedAt: now, UpdatedAt: now})
+	return s.repo.UpsertRole(ctx, domain.Role{ID: domain.RoleID(uuid.NewV7()), Code: normalized.Code, Name: normalized.Name, Description: normalized.Description, System: normalized.System, CreatedAt: now, UpdatedAt: now})
 }
 
 func (s *AuthorizationService) ListRoles(ctx context.Context, filter domain.RoleFilter) ([]domain.Role, int, error) {
@@ -161,7 +161,7 @@ func (s *AuthorizationService) CreatePermission(ctx context.Context, input domai
 		return nil, err
 	}
 	now := s.now().UTC()
-	permission, err := s.repo.CreatePermission(ctx, domain.Permission{ID: uuid.NewV7(), Code: normalized.Code, Name: normalized.Name, Description: normalized.Description, System: normalized.System, CreatedAt: now, UpdatedAt: now})
+	permission, err := s.repo.CreatePermission(ctx, domain.Permission{ID: domain.PermissionID(uuid.NewV7()), Code: normalized.Code, Name: normalized.Name, Description: normalized.Description, System: normalized.System, CreatedAt: now, UpdatedAt: now})
 	if err == nil {
 		emitEvent(ctx, s.events, domain.Event{Type: domain.EventPermissionCreated, At: now, PermissionID: permission.ID, Attributes: map[string]string{"code": permission.Code}})
 	}
@@ -174,7 +174,7 @@ func (s *AuthorizationService) EnsurePermission(ctx context.Context, input domai
 		return nil, err
 	}
 	now := s.now().UTC()
-	return s.repo.UpsertPermission(ctx, domain.Permission{ID: uuid.NewV7(), Code: normalized.Code, Name: normalized.Name, Description: normalized.Description, System: normalized.System, CreatedAt: now, UpdatedAt: now})
+	return s.repo.UpsertPermission(ctx, domain.Permission{ID: domain.PermissionID(uuid.NewV7()), Code: normalized.Code, Name: normalized.Name, Description: normalized.Description, System: normalized.System, CreatedAt: now, UpdatedAt: now})
 }
 
 func (s *AuthorizationService) ListPermissions(ctx context.Context, filter domain.PermissionFilter) ([]domain.Permission, int, error) {
@@ -238,11 +238,12 @@ func (s *AuthorizationService) SetUserRoles(ctx context.Context, userID domain.U
 	if err != nil {
 		return err
 	}
-	err = s.tx.WithinTx(ctx, func(c context.Context, uow domain.UnitOfWork) error {
-		return s.replaceUserRoles(c, uow, userID, roleCodes)
+	now := s.now().UTC()
+	err = s.tx.WithinTx(ctx, func(c context.Context, uow UnitOfWork) error {
+		return s.replaceUserRoles(c, uow, userID, roleCodes, now)
 	})
 	if err == nil {
-		emitEvent(ctx, s.events, domain.Event{Type: domain.EventUserRolesChanged, At: s.now().UTC(), UserID: userID})
+		emitEvent(ctx, s.events, domain.Event{Type: domain.EventUserRolesChanged, At: now, UserID: userID})
 	}
 	return err
 }
@@ -260,23 +261,24 @@ func (s *AuthorizationService) SetRolePermissions(ctx context.Context, roleID do
 	if err != nil {
 		return err
 	}
-	err = s.tx.WithinTx(ctx, func(c context.Context, uow domain.UnitOfWork) error {
-		return s.replaceRolePermissions(c, uow, roleID, permissionCodes)
+	now := s.now().UTC()
+	err = s.tx.WithinTx(ctx, func(c context.Context, uow UnitOfWork) error {
+		return s.replaceRolePermissions(c, uow, roleID, permissionCodes, now)
 	})
 	if err == nil {
-		emitEvent(ctx, s.events, domain.Event{Type: domain.EventRolePermissionsChanged, At: s.now().UTC(), RoleID: roleID})
+		emitEvent(ctx, s.events, domain.Event{Type: domain.EventRolePermissionsChanged, At: now, RoleID: roleID})
 	}
 	return err
 }
 
-func (s *AuthorizationService) assignDefaultRoles(ctx context.Context, uow domain.UnitOfWork, userID domain.UserID) error {
+func (s *AuthorizationService) assignDefaultRoles(ctx context.Context, uow UnitOfWork, userID domain.UserID) error {
 	if len(s.defaultRoles) == 0 {
 		return nil
 	}
-	return s.replaceUserRoles(ctx, uow, userID, s.defaultRoles)
+	return s.replaceUserRoles(ctx, uow, userID, s.defaultRoles, s.now().UTC())
 }
 
-func (s *AuthorizationService) replaceUserRoles(ctx context.Context, uow domain.UnitOfWork, userID domain.UserID, roleCodes []string) error {
+func (s *AuthorizationService) replaceUserRoles(ctx context.Context, uow UnitOfWork, userID domain.UserID, roleCodes []string, now time.Time) error {
 	if _, err := uow.Users().GetUser(ctx, userID); err != nil {
 		return err
 	}
@@ -297,10 +299,10 @@ func (s *AuthorizationService) replaceUserRoles(ctx context.Context, uow domain.
 		seen[role.ID] = struct{}{}
 		ids = append(ids, role.ID)
 	}
-	return uow.Authorization().ReplaceUserRoles(ctx, userID, ids)
+	return uow.Authorization().ReplaceUserRoles(ctx, userID, ids, now)
 }
 
-func (s *AuthorizationService) replaceRolePermissions(ctx context.Context, uow domain.UnitOfWork, roleID domain.RoleID, permissionCodes []string) error {
+func (s *AuthorizationService) replaceRolePermissions(ctx context.Context, uow UnitOfWork, roleID domain.RoleID, permissionCodes []string, now time.Time) error {
 	if _, err := uow.Authorization().GetRole(ctx, roleID); err != nil {
 		return err
 	}
@@ -321,7 +323,7 @@ func (s *AuthorizationService) replaceRolePermissions(ctx context.Context, uow d
 		seen[permission.ID] = struct{}{}
 		ids = append(ids, permission.ID)
 	}
-	return uow.Authorization().ReplaceRolePermissions(ctx, roleID, ids)
+	return uow.Authorization().ReplaceRolePermissions(ctx, roleID, ids, now)
 }
 
 func normalizeRoleInput(input domain.RoleInput) (domain.RoleInput, error) {

@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"strings"
 	"time"
-	"uuid"
 
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/danielgtaylor/huma/v2/adapters/humago"
@@ -16,30 +15,24 @@ import (
 )
 
 type Config struct {
-	AuthPrefix          string
-	AdminPrefix         string
-	RegistrationEnabled bool
-	EnableAdminRoutes   bool
-	EnableRBACRoutes    bool
-	CookieName          string
-	CookiePath          string
-	CookieDomain        string
-	SecureCookie        bool
-	SameSite            http.SameSite
-	TokenExtractor      func(*http.Request) string
-	RequestMetaResolver func(*http.Request) (domain.RequestMeta, error)
-	Authorizer          func(context.Context, *domain.Principal, string) error
-	ChallengeVerifier   domain.HumanChallengeVerifier
-	ChallengeCreator    domain.HumanChallengeCreator
-	RequireChallenge    bool
-}
-
-func parseUUID7(raw string) (uuid.UUID, error) {
-	id, err := uuid.Parse(strings.TrimSpace(raw))
-	if err != nil || id == uuid.Nil() || id[6]>>4 != 7 {
-		return uuid.Nil(), domain.ErrInvalid
-	}
-	return id, nil
+	AuthPrefix                     string
+	AdminPrefix                    string
+	LoginEnabled                   bool
+	RegistrationEnabled            bool
+	EnableAdminRoutes              bool
+	EnableRBACRoutes               bool
+	CookieName                     string
+	CookiePath                     string
+	CookieDomain                   string
+	SecureCookie                   bool
+	SameSite                       http.SameSite
+	TokenExtractor                 func(*http.Request) string
+	RequestMetaResolver            func(*http.Request) (domain.RequestMeta, error)
+	Authorizer                     func(context.Context, *domain.Principal, string) error
+	ChallengeVerifier              domain.HumanChallengeVerifier
+	ChallengeCreator               domain.HumanChallengeCreator
+	RequireChallengeOnLogin        bool
+	RequireChallengeOnRegistration bool
 }
 
 type Services struct {
@@ -95,6 +88,8 @@ func (e *Endpoint) Register(api huma.API) {
 	protected := huma.NewGroup(auth)
 	protected.UseMiddleware(e.RequiredMiddleware(api))
 	huma.Register(protected, huma.Operation{OperationID: "identity-current-session", Method: http.MethodGet, Path: "/session", Tags: []string{"Identity"}}, e.currentSession)
+	huma.Register(protected, huma.Operation{OperationID: "identity-list-sessions", Method: http.MethodGet, Path: "/sessions", Tags: []string{"Identity"}}, e.listSessions)
+	huma.Register(protected, huma.Operation{OperationID: "identity-revoke-session", Method: http.MethodDelete, Path: "/sessions/{sessionID}", DefaultStatus: http.StatusNoContent, Tags: []string{"Identity"}}, e.revokeSession)
 	huma.Register(protected, huma.Operation{OperationID: "identity-change-password", Method: http.MethodPatch, Path: "/password", Tags: []string{"Identity"}}, e.changePassword)
 	huma.Register(protected, huma.Operation{OperationID: "identity-revoke-sessions", Method: http.MethodPost, Path: "/sessions/revoke-all", Tags: []string{"Identity"}}, e.revokeAll)
 	if e.config.EnableAdminRoutes {
@@ -105,8 +100,8 @@ func (e *Endpoint) Register(api huma.API) {
 	}
 }
 
-func (e *Endpoint) verifyChallenge(ctx context.Context, response *challengeBody) error {
-	if !e.config.RequireChallenge {
+func (e *Endpoint) verifyChallenge(ctx context.Context, response *challengeBody, required bool) error {
+	if !required {
 		return nil
 	}
 	if e.config.ChallengeVerifier == nil || response == nil {
@@ -119,16 +114,27 @@ func (e *Endpoint) verifyChallenge(ctx context.Context, response *challengeBody)
 		return err
 	}
 	if err := e.config.ChallengeVerifier.Verify(ctx, response.domain(), requestMetaFromContext(ctx)); err != nil {
+		if errors.Is(err, domain.ErrHumanChallengeUnavailable) {
+			return domain.ErrHumanChallengeUnavailable
+		}
+		if errors.Is(err, domain.ErrHumanChallengeUnsupported) {
+			return domain.ErrHumanChallengeUnsupported
+		}
 		return domain.ErrHumanChallengeInvalid
 	}
 	return nil
 }
 
 func (e *Endpoint) configOutput(_ context.Context, _ *struct{}) (*struct{ Body configView }, error) {
-	body := configView{RegistrationEnabled: e.config.RegistrationEnabled}
+	body := configView{LoginEnabled: e.config.LoginEnabled, RegistrationEnabled: e.config.RegistrationEnabled}
 	if e.config.ChallengeVerifier != nil {
 		public := e.config.ChallengeVerifier.PublicConfig()
-		body.Challenge = &humanChallengeConfigView{Provider: public.Provider, SiteKey: public.SiteKey, Required: e.config.RequireChallenge}
+		body.Challenge = &humanChallengeConfigView{
+			Provider:              public.Provider,
+			SiteKey:               public.SiteKey,
+			RequireOnLogin:        e.config.RequireChallengeOnLogin,
+			RequireOnRegistration: e.config.RequireChallengeOnRegistration,
+		}
 	}
 	return &struct{ Body configView }{Body: body}, nil
 }
@@ -149,6 +155,12 @@ func (e *Endpoint) createChallenge(ctx context.Context, _ *struct{}) (*struct{ B
 			return nil, huma.Error400BadRequest("challenge creation unsupported")
 		}
 		return nil, huma.Error500InternalServerError("challenge creation failed")
+	}
+	if challenge == nil || strings.TrimSpace(challenge.Provider) == "" {
+		return nil, huma.Error400BadRequest("challenge creation unsupported")
+	}
+	if e.config.ChallengeVerifier != nil && strings.TrimSpace(challenge.Provider) != strings.TrimSpace(e.config.ChallengeVerifier.Name()) {
+		return nil, huma.Error400BadRequest("challenge provider mismatch")
 	}
 	return &struct{ Body challengeView }{Body: challengeViewFromDomain(challenge)}, nil
 }
@@ -241,14 +253,21 @@ func (e *Endpoint) token(r *http.Request) string {
 	if e.config.TokenExtractor != nil {
 		return strings.TrimSpace(e.config.TokenExtractor(r))
 	}
-	if c, err := r.Cookie(e.config.CookieName); err == nil && c.Value != "" {
-		return c.Value
+	cookieToken := ""
+	if c, err := r.Cookie(e.config.CookieName); err == nil {
+		cookieToken = strings.TrimSpace(c.Value)
 	}
 	auth := strings.TrimSpace(r.Header.Get("Authorization"))
 	if len(auth) > 7 && strings.EqualFold(auth[:7], "bearer ") {
-		return strings.TrimSpace(auth[7:])
+		bearerToken := strings.TrimSpace(auth[7:])
+		if cookieToken != "" && bearerToken != "" && cookieToken != bearerToken {
+			return ""
+		}
+		if bearerToken != "" {
+			return bearerToken
+		}
 	}
-	return ""
+	return cookieToken
 }
 func (e *Endpoint) requestMeta(r *http.Request) (domain.RequestMeta, error) {
 	if e != nil && e.config.RequestMetaResolver != nil {
@@ -317,6 +336,8 @@ func mapError(err error, login bool) error {
 			return huma.Error401Unauthorized("invalid challenge")
 		}
 		return huma.Error422UnprocessableEntity("invalid challenge")
+	case errors.Is(err, domain.ErrHumanChallengeUnavailable):
+		return huma.Error503ServiceUnavailable("human challenge provider unavailable")
 	case errors.Is(err, domain.ErrHumanChallengeUnsupported):
 		return huma.Error400BadRequest("challenge provider unsupported")
 	default:

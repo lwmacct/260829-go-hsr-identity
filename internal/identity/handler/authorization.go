@@ -61,6 +61,12 @@ type rolePathInput struct {
 type permissionPathInput struct {
 	PermissionID string `path:"permissionID" format:"uuid"`
 }
+type roleReadInput struct {
+	RoleID string `path:"roleID" format:"uuid"`
+}
+type permissionReadInput struct {
+	PermissionID string `path:"permissionID" format:"uuid"`
+}
 type roleBody struct {
 	Code        string `json:"code" minLength:"1"`
 	Name        string `json:"name,omitempty"`
@@ -118,16 +124,33 @@ func (e *Endpoint) registerAuthorization(api huma.API) {
 
 	huma.Register(admin, huma.Operation{OperationID: "identity-list-roles", Method: http.MethodGet, Path: "/roles", Tags: []string{"Identity Authorization"}}, e.listRoles)
 	huma.Register(admin, huma.Operation{OperationID: "identity-create-role", Method: http.MethodPost, Path: "/roles", DefaultStatus: http.StatusCreated, Tags: []string{"Identity Authorization"}}, e.createRole)
+	huma.Register(admin, huma.Operation{OperationID: "identity-get-role", Method: http.MethodGet, Path: "/roles/{roleID}", Tags: []string{"Identity Authorization"}}, e.getRole)
 	huma.Register(admin, huma.Operation{OperationID: "identity-update-role", Method: http.MethodPatch, Path: "/roles/{roleID}", Tags: []string{"Identity Authorization"}}, e.updateRole)
 	huma.Register(admin, huma.Operation{OperationID: "identity-delete-role", Method: http.MethodDelete, Path: "/roles/{roleID}", DefaultStatus: http.StatusNoContent, Tags: []string{"Identity Authorization"}}, e.deleteRole)
 	huma.Register(admin, huma.Operation{OperationID: "identity-list-permissions", Method: http.MethodGet, Path: "/permissions", Tags: []string{"Identity Authorization"}}, e.listPermissions)
 	huma.Register(admin, huma.Operation{OperationID: "identity-create-permission", Method: http.MethodPost, Path: "/permissions", DefaultStatus: http.StatusCreated, Tags: []string{"Identity Authorization"}}, e.createPermission)
+	huma.Register(admin, huma.Operation{OperationID: "identity-get-permission", Method: http.MethodGet, Path: "/permissions/{permissionID}", Tags: []string{"Identity Authorization"}}, e.getPermission)
 	huma.Register(admin, huma.Operation{OperationID: "identity-update-permission", Method: http.MethodPatch, Path: "/permissions/{permissionID}", Tags: []string{"Identity Authorization"}}, e.updatePermission)
 	huma.Register(admin, huma.Operation{OperationID: "identity-delete-permission", Method: http.MethodDelete, Path: "/permissions/{permissionID}", DefaultStatus: http.StatusNoContent, Tags: []string{"Identity Authorization"}}, e.deletePermission)
 	huma.Register(admin, huma.Operation{OperationID: "identity-list-user-roles", Method: http.MethodGet, Path: "/users/{userID}/roles", Tags: []string{"Identity Authorization"}}, e.listUserRoles)
 	huma.Register(admin, huma.Operation{OperationID: "identity-set-user-roles", Method: http.MethodPut, Path: "/users/{userID}/roles", Tags: []string{"Identity Authorization"}}, e.setUserRoles)
 	huma.Register(admin, huma.Operation{OperationID: "identity-list-role-permissions", Method: http.MethodGet, Path: "/roles/{roleID}/permissions", Tags: []string{"Identity Authorization"}}, e.listRolePermissions)
 	huma.Register(admin, huma.Operation{OperationID: "identity-set-role-permissions", Method: http.MethodPut, Path: "/roles/{roleID}/permissions", Tags: []string{"Identity Authorization"}}, e.setRolePermissions)
+}
+
+func (e *Endpoint) getRole(ctx context.Context, input *roleReadInput) (*roleResponse, error) {
+	if err := e.authorize(ctx, domain.ActionRoleRead); err != nil {
+		return nil, mapError(err, false)
+	}
+	id, err := domain.ParseRoleID(input.RoleID)
+	if err != nil {
+		return nil, mapError(err, false)
+	}
+	role, err := e.services.Authorization.RoleByID(ctx, id)
+	if err != nil {
+		return nil, mapError(err, false)
+	}
+	return &roleResponse{Body: roleViewFrom(role)}, nil
 }
 
 func (e *Endpoint) listRoles(ctx context.Context, input *roleListInput) (*roleListResponse, error) {
@@ -164,7 +187,7 @@ func (e *Endpoint) updateRole(ctx context.Context, input *roleInput) (*roleRespo
 	if err := e.authorize(ctx, domain.ActionRoleUpdate); err != nil {
 		return nil, mapError(err, false)
 	}
-	id, err := parseUUID7(input.RoleID)
+	id, err := domain.ParseRoleID(input.RoleID)
 	if err != nil {
 		return nil, mapError(err, false)
 	}
@@ -179,7 +202,7 @@ func (e *Endpoint) deleteRole(ctx context.Context, input *rolePathInput) (*struc
 	if err := e.authorize(ctx, domain.ActionRoleDelete); err != nil {
 		return nil, mapError(err, false)
 	}
-	id, err := parseUUID7(input.RoleID)
+	id, err := domain.ParseRoleID(input.RoleID)
 	if err != nil {
 		return nil, mapError(err, false)
 	}
@@ -216,11 +239,26 @@ func (e *Endpoint) createPermission(ctx context.Context, input *struct{ Body per
 	return &permissionResponse{Body: permissionViewFrom(permission)}, nil
 }
 
+func (e *Endpoint) getPermission(ctx context.Context, input *permissionReadInput) (*permissionResponse, error) {
+	if err := e.authorize(ctx, domain.ActionPermissionRead); err != nil {
+		return nil, mapError(err, false)
+	}
+	id, err := domain.ParsePermissionID(input.PermissionID)
+	if err != nil {
+		return nil, mapError(err, false)
+	}
+	permission, err := e.services.Authorization.PermissionByID(ctx, id)
+	if err != nil {
+		return nil, mapError(err, false)
+	}
+	return &permissionResponse{Body: permissionViewFrom(permission)}, nil
+}
+
 func (e *Endpoint) updatePermission(ctx context.Context, input *permissionInput) (*permissionResponse, error) {
 	if err := e.authorize(ctx, domain.ActionPermissionUpdate); err != nil {
 		return nil, mapError(err, false)
 	}
-	id, err := parseUUID7(input.PermissionID)
+	id, err := domain.ParsePermissionID(input.PermissionID)
 	if err != nil {
 		return nil, mapError(err, false)
 	}
@@ -235,7 +273,7 @@ func (e *Endpoint) deletePermission(ctx context.Context, input *permissionPathIn
 	if err := e.authorize(ctx, domain.ActionPermissionDelete); err != nil {
 		return nil, mapError(err, false)
 	}
-	id, err := parseUUID7(input.PermissionID)
+	id, err := domain.ParsePermissionID(input.PermissionID)
 	if err != nil {
 		return nil, mapError(err, false)
 	}
@@ -249,7 +287,7 @@ func (e *Endpoint) listUserRoles(ctx context.Context, input *roleAssignmentInput
 	if err := e.authorize(ctx, domain.ActionUserRoleManage); err != nil {
 		return nil, mapError(err, false)
 	}
-	id, err := parseUUID7(input.UserID)
+	id, err := domain.ParseUserID(input.UserID)
 	if err != nil {
 		return nil, mapError(err, false)
 	}
@@ -269,7 +307,7 @@ func (e *Endpoint) setUserRoles(ctx context.Context, input *userRolesInput) (*st
 	if err := e.authorize(ctx, domain.ActionUserRoleManage); err != nil {
 		return nil, mapError(err, false)
 	}
-	id, err := parseUUID7(input.UserID)
+	id, err := domain.ParseUserID(input.UserID)
 	if err != nil {
 		return nil, mapError(err, false)
 	}
@@ -283,7 +321,7 @@ func (e *Endpoint) listRolePermissions(ctx context.Context, input *rolePermissio
 	if err := e.authorize(ctx, domain.ActionRolePermissionManage); err != nil {
 		return nil, mapError(err, false)
 	}
-	id, err := parseUUID7(input.RoleID)
+	id, err := domain.ParseRoleID(input.RoleID)
 	if err != nil {
 		return nil, mapError(err, false)
 	}
@@ -303,7 +341,7 @@ func (e *Endpoint) setRolePermissions(ctx context.Context, input *rolePermission
 	if err := e.authorize(ctx, domain.ActionRolePermissionManage); err != nil {
 		return nil, mapError(err, false)
 	}
-	id, err := parseUUID7(input.RoleID)
+	id, err := domain.ParseRoleID(input.RoleID)
 	if err != nil {
 		return nil, mapError(err, false)
 	}

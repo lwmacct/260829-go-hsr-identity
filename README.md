@@ -24,12 +24,13 @@ mod, err := identity.New(identity.Options{
     DB: db,
     Session: identity.SessionOptions{TTL: 30 * 24 * time.Hour},
     HTTP: identity.HTTPOptions{
+        LoginEnabled:        true,
         RegistrationEnabled: true,
-        // Use pkg/identity/challenge for the built-in image or remote token
-        // providers, or supply a host-owned implementation. Set
-        // RequireChallenge when login and registration must solve it.
-        ChallengeProvider: challengeProvider,
-        RequireChallenge: true,
+        Challenge: identity.HTTPChallengeOptions{
+            Verifier:               challengeProvider,
+            RequireOnLogin:         true,
+            RequireOnRegistration:  true,
+        },
         SecureCookie: true,
     },
 })
@@ -37,6 +38,12 @@ if err != nil { return err }
 
 mod.Register(api) // 注册 /auth/*，以及配置开启时的 /admin/*
 ```
+
+`LoginEnabled` and `RegistrationEnabled` control the two password HTTP
+flows independently. `HTTP.Challenge` controls challenge verification and
+creation independently: a verifier is enough for remote token providers,
+while a creator is needed for image challenges or other server-issued
+challenges.
 
 测试或显式数据库初始化命令可由宿主执行 Bun schema：
 
@@ -104,6 +111,8 @@ POST  /auth/logout
 GET   /auth/config
 POST  /auth/challenges
 GET   /auth/session
+GET   /auth/sessions
+DELETE /auth/sessions/{sessionID}
 PATCH /auth/password
 POST  /auth/sessions/revoke-all
 ```

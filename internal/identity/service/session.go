@@ -99,7 +99,7 @@ func (s *SessionService) Create(ctx context.Context, id domain.UserID, meta doma
 	if e != nil {
 		return nil, e
 	}
-	sid := uuid.NewV7()
+	sid := domain.SessionID(uuid.NewV7())
 	r := &domain.SessionRecord{ID: sid, TokenHash: domain.HashBytes(token), UserID: id, LoginIP: meta.ClientIP, LastIP: meta.ClientIP, BindingHash: binding, ExpiresAt: now.Add(s.ttl), CreatedAt: now, LastSeenAt: now}
 	if e = s.repo.CreateSession(ctx, *r); e != nil {
 		return nil, e

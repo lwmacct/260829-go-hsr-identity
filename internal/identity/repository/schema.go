@@ -56,6 +56,11 @@ func (s Schema) Apply(ctx context.Context, db bun.IDB) error {
 	if db == nil {
 		return fmt.Errorf("identity schema: database is required")
 	}
+	if db.Dialect().Name() == dialect.SQLite {
+		if _, err := db.NewRaw("PRAGMA foreign_keys = ON").Exec(ctx); err != nil {
+			return fmt.Errorf("enable SQLite foreign keys: %w", err)
+		}
+	}
 	for _, model := range s.Models {
 		if _, err := db.NewCreateTable().Model(model).IfNotExists().WithForeignKeys().Exec(ctx); err != nil {
 			return fmt.Errorf("create identity table: %w", err)
@@ -96,6 +101,39 @@ func ValidateSchema(ctx context.Context, db *bun.DB) error {
 			}
 		}
 	}
+	switch db.Dialect().Name() {
+	case dialect.SQLite:
+		// SQLite foreign-key enforcement is connection-local. Identity deletes
+		// dependent rows explicitly, so schema validity does not depend on a
+		// pool-wide PRAGMA setting.
+	case dialect.PG:
+		var versionNum int
+		if err := db.NewRaw("SHOW server_version_num").Scan(ctx, &versionNum); err != nil {
+			return fmt.Errorf("inspect PostgreSQL version: %w", err)
+		}
+		if versionNum < 180000 {
+			return fmt.Errorf("identity requires PostgreSQL 18 or newer, got %d", versionNum)
+		}
+	default:
+		return fmt.Errorf("unsupported database dialect %s", db.Dialect().Name())
+	}
+	for _, index := range []struct {
+		table string
+		name  string
+	}{
+		{"identity_sessions", "identity_sessions_user_expiry_idx"},
+		{"identity_sessions", "identity_sessions_expiry_idx"},
+		{"identity_user_roles", "identity_user_roles_role_idx"},
+		{"identity_role_permissions", "identity_role_permissions_permission_idx"},
+	} {
+		exists, err := schemaIndexExists(ctx, db, index.table, index.name)
+		if err != nil {
+			return fmt.Errorf("inspect identity schema index %s: %w", index.name, err)
+		}
+		if !exists {
+			return fmt.Errorf("identity schema is incomplete: missing index %s", index.name)
+		}
+	}
 	return nil
 }
 
@@ -107,6 +145,20 @@ func schemaColumnExists(ctx context.Context, db *bun.DB, table, column string) (
 		return count > 0, err
 	case dialect.PG:
 		err := db.NewRaw("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = ? AND column_name = ?", table, column).Scan(ctx, &count)
+		return count > 0, err
+	default:
+		return false, fmt.Errorf("unsupported database dialect %s", db.Dialect().Name())
+	}
+}
+
+func schemaIndexExists(ctx context.Context, db *bun.DB, table, index string) (bool, error) {
+	var count int
+	switch db.Dialect().Name() {
+	case dialect.SQLite:
+		err := db.NewRaw("SELECT COUNT(*) FROM pragma_index_list(?) WHERE name = ?", table, index).Scan(ctx, &count)
+		return count > 0, err
+	case dialect.PG:
+		err := db.NewRaw("SELECT COUNT(*) FROM pg_indexes WHERE schemaname = current_schema() AND tablename = ? AND indexname = ?", table, index).Scan(ctx, &count)
 		return count > 0, err
 	default:
 		return false, fmt.Errorf("unsupported database dialect %s", db.Dialect().Name())

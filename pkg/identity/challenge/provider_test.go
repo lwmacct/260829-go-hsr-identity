@@ -111,8 +111,8 @@ func TestRemoteTokenProviderRejectsInvalidConfigurationAndResponses(t *testing.T
 	if err := provider.Verify(context.Background(), domain.HumanChallengeResponse{}, domain.RequestMeta{}); !errors.Is(err, domain.ErrHumanChallengeInvalid) {
 		t.Fatalf("empty token error = %v, want invalid challenge", err)
 	}
-	if err := provider.Verify(context.Background(), domain.HumanChallengeResponse{Token: "token"}, domain.RequestMeta{}); !errors.Is(err, domain.ErrHumanChallengeInvalid) {
-		t.Fatalf("bad gateway error = %v, want invalid challenge", err)
+	if err := provider.Verify(context.Background(), domain.HumanChallengeResponse{Token: "token"}, domain.RequestMeta{}); !errors.Is(err, domain.ErrHumanChallengeUnavailable) {
+		t.Fatalf("bad gateway error = %v, want provider unavailable", err)
 	}
 }
 
