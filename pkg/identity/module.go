@@ -18,6 +18,7 @@ import (
 
 type Module struct {
 	users            *service.UserService
+	contacts         *service.ContactService
 	password         *service.PasswordService
 	session          *service.SessionService
 	authorization    *service.AuthorizationService
@@ -64,7 +65,7 @@ func New(options Options) (*Module, error) {
 		now = func() time.Time { return time.Now().UTC() }
 	}
 	store := repository.NewStore(options.DB)
-	users, err := service.NewUserService(store, store, now)
+	users, err := service.NewUserService(store, store, store, now)
 	if err != nil {
 		return nil, err
 	}
@@ -78,6 +79,11 @@ func New(options Options) (*Module, error) {
 	if err != nil {
 		return nil, err
 	}
+	contacts, err := service.NewContactService(store, users, store, options.Contacts.Phone, options.Contacts.Email, options.Contacts.TTL, options.Contacts.ResendInterval, options.Contacts.MaxAttempts, now)
+	if err != nil {
+		return nil, err
+	}
+	contacts.SetEventSink(options.Events)
 	authorization.SetEventSink(options.Events)
 	claims := func(ctx context.Context, user *domain.User) (domain.Claims, error) {
 		builtIn, err := authorization.Claims(ctx, user)
@@ -166,8 +172,8 @@ func New(options Options) (*Module, error) {
 		RequireChallengeOnLogin:        options.HTTP.Challenge.RequireOnLogin,
 		RequireChallengeOnRegistration: options.HTTP.Challenge.RequireOnRegistration,
 		Authorizer:                     authorizer,
-	}, handler.Services{Users: users, Passwords: password, Sessions: session, Accounts: account, Authorization: authorization})
-	return &Module{users: users, password: password, session: session, authorization: authorization, account: account, challenge: options.HTTP.Challenge.Verifier, challengeCreator: creator, handler: endpoint}, nil
+	}, handler.Services{Users: users, Contacts: contacts, Passwords: password, Sessions: session, Accounts: account, Authorization: authorization})
+	return &Module{users: users, contacts: contacts, password: password, session: session, authorization: authorization, account: account, challenge: options.HTTP.Challenge.Verifier, challengeCreator: creator, handler: endpoint}, nil
 }
 
 func MustNew(options Options) *Module {
@@ -209,6 +215,18 @@ func (m *Module) CreateUser(ctx context.Context, input UserCreateInput) (*User, 
 }
 func (m *Module) UpdateUserProfile(ctx context.Context, id UserID, input UserUpdateProfileInput) (*User, error) {
 	return m.users.UpdateProfile(ctx, id, input)
+}
+func (m *Module) ListUserContacts(ctx context.Context, id UserID) ([]UserContact, error) {
+	return m.contacts.ListUserContacts(ctx, id)
+}
+func (m *Module) StartContactVerification(ctx context.Context, id UserID, kind ContactKind, value string, meta RequestMeta) (*ContactVerification, error) {
+	return m.contacts.StartVerification(ctx, id, kind, value, meta)
+}
+func (m *Module) ConfirmContactVerification(ctx context.Context, id UserID, kind ContactKind, verificationID ContactVerificationID, code string, meta RequestMeta) (*UserContact, error) {
+	return m.contacts.ConfirmVerification(ctx, id, kind, verificationID, code, meta)
+}
+func (m *Module) UnbindContact(ctx context.Context, id UserID, kind ContactKind) error {
+	return m.contacts.Unbind(ctx, id, kind)
 }
 func (m *Module) MarkUserLogin(ctx context.Context, id UserID) error {
 	return m.users.MarkLogin(ctx, id)

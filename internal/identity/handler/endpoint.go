@@ -37,6 +37,7 @@ type Config struct {
 
 type Services struct {
 	Users         *service.UserService
+	Contacts      *service.ContactService
 	Passwords     *service.PasswordService
 	Sessions      *service.SessionService
 	Accounts      *service.AccountService
@@ -88,6 +89,11 @@ func (e *Endpoint) Register(api huma.API) {
 	protected := huma.NewGroup(auth)
 	protected.UseMiddleware(e.RequiredMiddleware(api))
 	huma.Register(protected, huma.Operation{OperationID: "identity-current-session", Method: http.MethodGet, Path: "/session", Tags: []string{"Identity"}}, e.currentSession)
+	huma.Register(protected, huma.Operation{OperationID: "identity-current-profile", Method: http.MethodGet, Path: "/profile", Tags: []string{"Identity"}}, e.currentProfile)
+	huma.Register(protected, huma.Operation{OperationID: "identity-update-profile", Method: http.MethodPatch, Path: "/profile", Tags: []string{"Identity"}}, e.updateCurrentProfile)
+	huma.Register(protected, huma.Operation{OperationID: "identity-start-contact-verification", Method: http.MethodPost, Path: "/profile/contacts/{kind}/verification", Tags: []string{"Identity"}}, e.startContactVerification)
+	huma.Register(protected, huma.Operation{OperationID: "identity-confirm-contact-verification", Method: http.MethodPost, Path: "/profile/contacts/{kind}/verification/confirm", Tags: []string{"Identity"}}, e.confirmContactVerification)
+	huma.Register(protected, huma.Operation{OperationID: "identity-unbind-contact", Method: http.MethodDelete, Path: "/profile/contacts/{kind}", DefaultStatus: http.StatusNoContent, Tags: []string{"Identity"}}, e.unbindContact)
 	huma.Register(protected, huma.Operation{OperationID: "identity-list-sessions", Method: http.MethodGet, Path: "/sessions", Tags: []string{"Identity"}}, e.listSessions)
 	huma.Register(protected, huma.Operation{OperationID: "identity-revoke-session", Method: http.MethodDelete, Path: "/sessions/{sessionID}", DefaultStatus: http.StatusNoContent, Tags: []string{"Identity"}}, e.revokeSession)
 	huma.Register(protected, huma.Operation{OperationID: "identity-change-password", Method: http.MethodPatch, Path: "/password", Tags: []string{"Identity"}}, e.changePassword)
@@ -127,6 +133,12 @@ func (e *Endpoint) verifyChallenge(ctx context.Context, response *challengeBody,
 
 func (e *Endpoint) configOutput(_ context.Context, _ *struct{}) (*struct{ Body configView }, error) {
 	body := configView{LoginEnabled: e.config.LoginEnabled, RegistrationEnabled: e.config.RegistrationEnabled}
+	if e.services.Contacts != nil {
+		body.Contacts = contactConfigView{
+			PhoneEnabled: e.services.Contacts.Enabled(domain.ContactKindPhone),
+			EmailEnabled: e.services.Contacts.Enabled(domain.ContactKindEmail),
+		}
+	}
 	if e.config.ChallengeVerifier != nil {
 		public := e.config.ChallengeVerifier.PublicConfig()
 		body.Challenge = &humanChallengeConfigView{
@@ -325,12 +337,20 @@ func mapError(err error, login bool) error {
 		return huma.Error429TooManyRequests("too many login attempts")
 	case errors.Is(err, domain.ErrDisabled):
 		return huma.Error403Forbidden("user is disabled")
-	case errors.Is(err, domain.ErrNotFound):
+	case errors.Is(err, domain.ErrNotFound), errors.Is(err, domain.ErrContactNotFound), errors.Is(err, domain.ErrVerificationNotFound):
 		return huma.Error404NotFound("not found")
-	case errors.Is(err, domain.ErrConflict), errors.Is(err, domain.ErrUsernameTaken), errors.Is(err, domain.ErrPhoneTaken), errors.Is(err, domain.ErrEmailTaken):
+	case errors.Is(err, domain.ErrConflict), errors.Is(err, domain.ErrUsernameTaken):
 		return huma.Error409Conflict("identity conflict")
+	case errors.Is(err, domain.ErrContactTaken):
+		return huma.Error409Conflict("contact already bound")
 	case errors.Is(err, domain.ErrInvalid), errors.Is(err, domain.ErrWeakPassword), errors.Is(err, domain.ErrInvalidState), errors.Is(err, domain.ErrInvalidRequestMeta):
 		return huma.Error422UnprocessableEntity("invalid identity request")
+	case errors.Is(err, domain.ErrInvalidPhone), errors.Is(err, domain.ErrInvalidEmail), errors.Is(err, domain.ErrInvalidContactKind), errors.Is(err, domain.ErrVerificationInvalid), errors.Is(err, domain.ErrVerificationExpired):
+		return huma.Error422UnprocessableEntity("invalid contact verification request")
+	case errors.Is(err, domain.ErrVerificationUnsupported):
+		return huma.Error400BadRequest("contact verification unsupported")
+	case errors.Is(err, domain.ErrVerificationUnavailable):
+		return huma.Error503ServiceUnavailable("contact verification unavailable")
 	case errors.Is(err, domain.ErrHumanChallengeInvalid):
 		if login {
 			return huma.Error401Unauthorized("invalid challenge")

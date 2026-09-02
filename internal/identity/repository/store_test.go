@@ -23,14 +23,24 @@ func TestMapUserWriteErrorUsesPostgresConstraintName(t *testing.T) {
 		want       error
 	}{
 		{constraint: "identity_users_username_uq", want: domain.ErrUsernameTaken},
-		{constraint: "identity_users_phone_uq", want: domain.ErrPhoneTaken},
-		{constraint: "identity_users_email_uq", want: domain.ErrEmailTaken},
 		{constraint: "other_unique_constraint", want: domain.ErrConflict},
 	}
 	for _, tc := range cases {
 		err := mapUserWriteError(testPostgresError{'C': "23505", 'n': tc.constraint})
 		if !errors.Is(err, tc.want) {
 			t.Fatalf("constraint %q mapped to %v, want %v", tc.constraint, err, tc.want)
+		}
+	}
+}
+
+func TestMapContactWriteErrorUsesContactConflict(t *testing.T) {
+	for _, constraint := range []string{
+		"identity_user_contacts_user_kind_uq",
+		"identity_user_contacts_kind_value_uq",
+	} {
+		err := mapContactWriteError(testPostgresError{'C': "23505", 'n': constraint})
+		if !errors.Is(err, domain.ErrContactTaken) {
+			t.Fatalf("constraint %q mapped to %v, want %v", constraint, err, domain.ErrContactTaken)
 		}
 	}
 }

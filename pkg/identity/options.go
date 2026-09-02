@@ -114,6 +114,14 @@ type HTTPChallengeOptions struct {
 	RequireOnRegistration bool
 }
 
+type ContactOptions struct {
+	Phone          ContactVerificationProvider
+	Email          ContactVerificationProvider
+	TTL            time.Duration
+	ResendInterval time.Duration
+	MaxAttempts    int
+}
+
 type HTTPOptions struct {
 	AuthPrefix  string
 	AdminPrefix string
@@ -139,6 +147,7 @@ type Options struct {
 	Clock         Clock
 	Password      PasswordOptions
 	Session       SessionOptions
+	Contacts      ContactOptions
 	Authorization AuthorizationOptions
 	HTTP          HTTPOptions
 	Authorizer    Authorizer
@@ -165,6 +174,7 @@ func DefaultOptions() Options {
 	return Options{
 		Password: PasswordOptions{Policy: PasswordPolicy{MinLength: 12, MaxLength: 128, RejectLoginIdentifier: true, RejectCommon: true}},
 		Session:  SessionOptions{TTL: 30 * 24 * time.Hour, TouchInterval: 5 * time.Minute, TokenBytes: 32, Binding: NoBinding{}},
+		Contacts: ContactOptions{TTL: 10 * time.Minute, ResendInterval: time.Minute, MaxAttempts: 5},
 		HTTP:     HTTPOptions{AuthPrefix: "/auth", AdminPrefix: "/admin", LoginEnabled: true, CookieName: "identity_session", CookiePath: "/", SameSite: http.SameSiteLaxMode},
 	}
 }

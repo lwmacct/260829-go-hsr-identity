@@ -23,6 +23,10 @@ internal/identity/repository Bun model、查询、事务、错误映射
 mod, err := identity.New(identity.Options{
     DB: db,
     Session: identity.SessionOptions{TTL: 30 * 24 * time.Hour},
+    Contacts: identity.ContactOptions{
+        Phone: phoneVerificationProvider,
+        Email: emailVerificationProvider,
+    },
     HTTP: identity.HTTPOptions{
         LoginEnabled:        true,
         RegistrationEnabled: true,
@@ -76,14 +80,15 @@ Events: identity.EventSinkFunc(func(ctx context.Context, event identity.Event) {
 ```go
 user, err := mod.RegisterUser(ctx, identity.UserCreateInput{
     Username: "alice",
-    Phone:    "+8613812345678",
-    Email:    "alice@example.com",
 }, password)
 user, err = mod.Authenticate(ctx, "alice", password)
 user, issued, err := mod.Login(ctx, "alice", password, identity.RequestMeta{ClientIP: "203.0.113.10"})
-user, issued, err = mod.Login(ctx, "+8613812345678", password, identity.RequestMeta{ClientIP: "203.0.113.10"})
-user, issued, err = mod.Login(ctx, "alice@example.com", password, identity.RequestMeta{ClientIP: "203.0.113.10"})
 principal, err := mod.ResolveSession(ctx, issued.Token, identity.RequestMeta{ClientIP: "203.0.113.10"})
+
+// Contact binding is only available after authentication and requires an
+// independently configured phone or email verification provider.
+verification, err := mod.StartContactVerification(ctx, user.ID, identity.ContactKindEmail, "alice@example.com", identity.RequestMeta{})
+contact, err := mod.ConfirmContactVerification(ctx, user.ID, identity.ContactKindEmail, verification.ID, code, identity.RequestMeta{})
 
 // Trusted host-side provisioning with explicit roles:
 user, err = mod.ProvisionUser(ctx, identity.UserProvisionInput{
@@ -112,12 +117,11 @@ active sessions.
 `last_login_at`。用户和 Session ID 固定为 UUIDv7，直接调用 Go 1.27 标准库
 `uuid.NewV7()` 生成；不提供自定义 ID 生成器。
 
-登录统一使用 `identifier`，支持用户名、手机号和邮箱。用户名必须是
+登录统一使用 `identifier`，支持用户名、已验证手机号和已验证邮箱。用户名必须是
 1-64 个小写 ASCII 字符，格式为 `^[a-z]([a-z0-9_-]*[a-z0-9])?$`；
 手机号保存为带国家码的 E.164 形式；邮箱保存为去除首尾空白并转小写后的
-规范值。三个字段分别具有独立的唯一索引，手机号和邮箱可以为空。
-
-手机号和邮箱只是密码登录别名，不表示联系方式所有权已验证，也不能直接作为密码找回、MFA 或安全通知的可信依据。需要这些能力时由宿主实现明确的验证流程和状态存储。
+规范值。用户名、手机号和邮箱分别具有独立的唯一约束；手机号和邮箱只有
+验证成功后才会成为登录别名。
 
 `LoginGuard` 接收的 `LoginAttempt.IdentifierKey` 是规范化标识的 SHA-256 opaque key，不是用户名、手机号或邮箱原文；非法或超长输入统一使用 `invalid` bucket。集成方不应尝试从该 key 恢复或记录原始标识。
 
@@ -134,13 +138,19 @@ POST  /auth/logout
 GET   /auth/config
 POST  /auth/challenges
 GET   /auth/session
+GET   /auth/profile
+PATCH /auth/profile
+POST  /auth/profile/contacts/{kind}/verification
+POST  /auth/profile/contacts/{kind}/verification/confirm
+DELETE /auth/profile/contacts/{kind}
 GET   /auth/sessions
 DELETE /auth/sessions/{sessionID}
 PATCH /auth/password
 POST  /auth/sessions/revoke-all
 ```
 
-`POST /auth/register` 接受 `username`、可选的 `phone` 和 `email`；
+`POST /auth/register` 只接受 `username` 和 `password`，手机号和邮箱必须在
+认证后的个人中心独立验证后绑定；
 `POST /auth/login` 接受 `identifier` 和 `password`：
 
 ```json
@@ -161,6 +171,8 @@ POST  /auth/sessions/revoke-all
 
 ```text
 identity_users
+identity_user_contacts
+identity_contact_verifications
 identity_passwords
 identity_sessions
 identity_roles
@@ -169,19 +181,27 @@ identity_user_roles
 identity_role_permissions
 ```
 
-`identity_users` 的登录字段为：
+`identity_users` 只保存用户主体：
 
 ```text
 id          UUIDv7 主键
 username    小写 ASCII 用户名，唯一
-phone_e164  可选的 E.164 手机号，唯一
-email       可选的规范化邮箱，唯一
 ```
 
-当前方案不包含手机号验证、短信验证码或邮箱验证；这些能力需要由宿主
-在明确的验证流程中实现，不能仅根据字段存在认定联系方式已验证。
+`identity_user_contacts` 保存已经验证的联系方式：
 
-不包含 `user_external_identities`，也不包含 OAuth、SSH、验证码或审计表。通用的图片和远程 token
+```text
+user_id             用户 ID
+kind                phone 或 email
+normalized_value    E.164 手机号或规范化邮箱
+verified_at         验证成功时间
+```
+
+手机号和邮箱使用独立 Provider。Provider 由宿主注入，负责向短信或邮件
+服务发起验证以及校验验证码；identity 负责验证请求生命周期、绑定事务、
+频率限制和登录查询。
+
+不包含 `user_external_identities`，也不包含 OAuth、SSH 或审计表。通用的图片和远程 token
 验证码 provider 位于 `pkg/identity/challenge`；宿主也可以分别实现 `HumanChallengeVerifier` 和可选的 `HumanChallengeCreator` 后注入。
 identity 负责配置、挑战路由、登录/注册校验和业务侧复用的 `CreateChallenge`/`VerifyChallenge`。
 宿主的业务权限编码写入 identity 的通用 permission 表，但权限语义仍由宿主定义。

@@ -5,10 +5,12 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -34,7 +36,7 @@ func testModule(t *testing.T) (*identity.Module, *bun.DB) {
 	if err := identity.ApplySchema(context.Background(), db); err != nil {
 		t.Fatal(err)
 	}
-	m, err := identity.New(identity.Options{DB: db, Clock: func() time.Time { return time.Unix(100, 0).UTC() }, Password: identity.PasswordOptions{Policy: identity.PasswordPolicy{MinLength: 8, MaxLength: 64, RejectLoginIdentifier: true}}, Session: identity.SessionOptions{Binding: identity.IPBinding{}}, HTTP: identity.HTTPOptions{LoginEnabled: true, RegistrationEnabled: true}})
+	m, err := identity.New(identity.Options{DB: db, Clock: func() time.Time { return time.Unix(100, 0).UTC() }, Password: identity.PasswordOptions{Policy: identity.PasswordPolicy{MinLength: 8, MaxLength: 64, RejectLoginIdentifier: true}}, Session: identity.SessionOptions{Binding: identity.IPBinding{}}, Contacts: identity.ContactOptions{Phone: &testContactProvider{name: "phone-test", code: "2468"}, Email: &testContactProvider{name: "email-test", code: "2468"}}, HTTP: identity.HTTPOptions{LoginEnabled: true, RegistrationEnabled: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -195,19 +197,33 @@ func TestModuleDeleteUsersRollsBackWhenDeleteParticipantFails(t *testing.T) {
 	}
 }
 
-func TestLoginIdentifiersNormalizeAndRemainUnique(t *testing.T) {
+func TestVerifiedContactsNormalizeRemainUniqueAndLogin(t *testing.T) {
 	m, _ := testModule(t)
 	ctx := context.Background()
-	user, err := m.RegisterUser(ctx, identity.UserCreateInput{
-		Username: "elodie",
-		Phone:    "+8613812345678",
-		Email:    "Elodie@Example.com",
-	}, "correct horse")
+	user, err := m.RegisterUser(ctx, identity.UserCreateInput{Username: "elodie"}, "correct horse")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if user.Username != "elodie" || user.Phone != "+8613812345678" || user.Email != "elodie@example.com" {
-		t.Fatalf("stored identifiers = %#v", user)
+	phoneVerification, err := m.StartContactVerification(ctx, user.ID, identity.ContactKindPhone, "+8613812345678", identity.RequestMeta{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.ConfirmContactVerification(ctx, user.ID, identity.ContactKindPhone, phoneVerification.ID, "2468", identity.RequestMeta{}); err != nil {
+		t.Fatal(err)
+	}
+	emailVerification, err := m.StartContactVerification(ctx, user.ID, identity.ContactKindEmail, "Elodie@Example.com", identity.RequestMeta{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.ConfirmContactVerification(ctx, user.ID, identity.ContactKindEmail, emailVerification.ID, "2468", identity.RequestMeta{}); err != nil {
+		t.Fatal(err)
+	}
+	contacts, err := m.ListUserContacts(ctx, user.ID)
+	if err != nil || len(contacts) != 2 {
+		t.Fatalf("contacts = %#v err=%v", contacts, err)
+	}
+	if contacts[0].Value != "elodie@example.com" || contacts[1].Value != "+8613812345678" {
+		t.Fatalf("normalized contacts = %#v", contacts)
 	}
 	for _, identifier := range []string{"elodie", "+8613812345678", "ELODIE@EXAMPLE.COM"} {
 		found, err := m.UserByLoginIdentifier(ctx, identifier)
@@ -218,84 +234,66 @@ func TestLoginIdentifiersNormalizeAndRemainUnique(t *testing.T) {
 			t.Fatalf("identifier %q login error = %v", identifier, err)
 		}
 	}
-	duplicates := []struct {
-		identifier string
-		wantErr    error
-	}{
-		{"elodie", identity.ErrUsernameTaken},
-		{"+8613812345678", identity.ErrPhoneTaken},
-		{"elodie@example.com", identity.ErrEmailTaken},
-	}
-	for _, duplicate := range duplicates {
-		identifier := duplicate.identifier
-		input := identity.UserCreateInput{Username: "other-user"}
-		switch identifier[0] {
-		case '+':
-			input.Phone = identifier
-		case 'e':
-			if strings.Contains(identifier, "@") {
-				input.Email = identifier
-			} else {
-				input.Username = identifier
-			}
-		}
-		if _, err := m.RegisterUser(ctx, input, "another horse"); !errors.Is(err, duplicate.wantErr) {
-			t.Fatalf("duplicate identifier %q error = %v, want %v", identifier, err, duplicate.wantErr)
-		}
-	}
-	emptyContact, err := m.RegisterUser(ctx, identity.UserCreateInput{Username: "no-contact"}, "another horse")
+	other, err := m.RegisterUser(ctx, identity.UserCreateInput{Username: "other-user"}, "another horse")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if emptyContact.Phone != "" || emptyContact.Email != "" {
-		t.Fatalf("empty contact values = %#v", emptyContact)
+	if _, err := m.StartContactVerification(ctx, other.ID, identity.ContactKindPhone, "+8613812345678", identity.RequestMeta{}); !errors.Is(err, identity.ErrContactTaken) {
+		t.Fatalf("duplicate phone error = %v", err)
 	}
-	emptyContact2, err := m.RegisterUser(ctx, identity.UserCreateInput{Username: "no-contact-2"}, "another horse")
+	if _, err := m.StartContactVerification(ctx, other.ID, identity.ContactKindEmail, "elodie@example.com", identity.RequestMeta{}); !errors.Is(err, identity.ErrContactTaken) {
+		t.Fatalf("duplicate email error = %v", err)
+	}
+	unverified, err := m.RegisterUser(ctx, identity.UserCreateInput{Username: "unverified"}, "another horse")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if emptyContact2.Phone != "" || emptyContact2.Email != "" {
-		t.Fatalf("second empty contact values = %#v", emptyContact2)
-	}
-	phone := "+14155552671"
-	email := "no-contact@example.com"
-	avatar := "https://example.test/avatar.png"
-	updated, err := m.UpdateUserProfile(ctx, emptyContact.ID, identity.UserUpdateProfileInput{
-		DisplayName: "No Contact Updated",
-		Phone:       &phone,
-		Email:       &email,
-		AvatarURL:   &avatar,
-	})
+	pending, err := m.StartContactVerification(ctx, unverified.ID, identity.ContactKindPhone, "+14155552671", identity.RequestMeta{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if updated.Phone != phone || updated.Email != email || updated.AvatarURL != avatar {
-		t.Fatalf("updated contact values = %#v", updated)
+	if _, err := m.UserByLoginIdentifier(ctx, "+14155552671"); !errors.Is(err, identity.ErrNotFound) {
+		t.Fatalf("unverified phone lookup error = %v", err)
 	}
-	updated, err = m.UpdateUserProfile(ctx, emptyContact.ID, identity.UserUpdateProfileInput{DisplayName: "Display Only"})
-	if err != nil {
-		t.Fatal(err)
+	if _, _, err := m.Login(ctx, "+14155552671", "another horse", identity.RequestMeta{}); !errors.Is(err, identity.ErrUnauthenticated) {
+		t.Fatalf("unverified phone login error = %v", err)
 	}
-	if updated.Phone != phone || updated.Email != email || updated.AvatarURL != avatar {
-		t.Fatalf("display-only update cleared identifiers = %#v", updated)
-	}
-	clear := ""
-	updated, err = m.UpdateUserProfile(ctx, emptyContact.ID, identity.UserUpdateProfileInput{
-		DisplayName: "Contacts Cleared",
-		Phone:       &clear,
-		Email:       &clear,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if updated.Phone != "" || updated.Email != "" {
-		t.Fatalf("cleared contact values = %#v", updated)
-	}
-	if _, err := m.RegisterUser(ctx, identity.UserCreateInput{Username: "contact-password", Phone: "+14155552671"}, "+14155552671"); !errors.Is(err, identity.ErrWeakPassword) {
+	if err := m.ResetPassword(ctx, user.ID, "+8613812345678"); !errors.Is(err, identity.ErrWeakPassword) {
 		t.Fatalf("phone-as-password error = %v", err)
 	}
-	if _, err := m.RegisterUser(ctx, identity.UserCreateInput{Username: "email-password", Email: "password@example.com"}, "password@example.com"); !errors.Is(err, identity.ErrWeakPassword) {
+	if err := m.ResetPassword(ctx, user.ID, "elodie@example.com"); !errors.Is(err, identity.ErrWeakPassword) {
 		t.Fatalf("email-as-password error = %v", err)
+	}
+	if err := m.UnbindContact(ctx, user.ID, identity.ContactKindPhone); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.UserByLoginIdentifier(ctx, "+8613812345678"); !errors.Is(err, identity.ErrNotFound) {
+		t.Fatalf("unbound phone lookup error = %v", err)
+	}
+	_ = pending
+}
+
+func TestContactVerificationRejectsInvalidCodesAndRateLimitsResends(t *testing.T) {
+	m, _ := testModule(t)
+	ctx := context.Background()
+	user, err := m.RegisterUser(ctx, identity.UserCreateInput{Username: "contact-limits"}, "correct horse")
+	if err != nil {
+		t.Fatal(err)
+	}
+	verification, err := m.StartContactVerification(ctx, user.ID, identity.ContactKindPhone, "+14155552671", identity.RequestMeta{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.StartContactVerification(ctx, user.ID, identity.ContactKindPhone, "+14155552672", identity.RequestMeta{}); !errors.Is(err, identity.ErrRateLimited) {
+		t.Fatalf("verification resend error = %v", err)
+	}
+	for i := 0; i < 5; i++ {
+		if _, err := m.ConfirmContactVerification(ctx, user.ID, identity.ContactKindPhone, verification.ID, "0000", identity.RequestMeta{}); !errors.Is(err, identity.ErrVerificationInvalid) {
+			t.Fatalf("invalid verification attempt %d error = %v", i+1, err)
+		}
+	}
+	if _, err := m.ConfirmContactVerification(ctx, user.ID, identity.ContactKindPhone, verification.ID, "2468", identity.RequestMeta{}); !errors.Is(err, identity.ErrVerificationInvalid) {
+		t.Fatalf("consumed verification after attempt limit error = %v", err)
 	}
 }
 
@@ -351,7 +349,7 @@ func TestUsernameAndContactNormalizationRules(t *testing.T) {
 	}
 }
 
-func TestSQLiteDatabaseChecksRejectInvalidUsernameAndPhone(t *testing.T) {
+func TestSQLiteDatabaseChecksRejectInvalidUsername(t *testing.T) {
 	_, db := testModule(t)
 	ctx := context.Background()
 	now := time.Unix(100, 0).UTC()
@@ -362,15 +360,6 @@ func TestSQLiteDatabaseChecksRejectInvalidUsernameAndPhone(t *testing.T) {
 		).Exec(ctx)
 		if err == nil {
 			t.Fatalf("database accepted invalid username %q at case %d", username, i)
-		}
-	}
-	for _, phone := range []string{"13800138000", "+86 13800138000", "+01234567", "+1234567x"} {
-		_, err := db.NewRaw(
-			"INSERT INTO identity_users (id, username, phone_e164, display_name, avatar_url, state, created_at, updated_at) VALUES (?, ?, ?, ?, '', 'active', ?, ?)",
-			uuid.NewV7().String(), "phone-check-"+strings.ReplaceAll(phone, "+", "p"), phone, phone, now, now,
-		).Exec(ctx)
-		if err == nil {
-			t.Fatalf("database accepted invalid phone %q", phone)
 		}
 	}
 }
@@ -493,18 +482,12 @@ func TestResetPasswordRevokesSessions(t *testing.T) {
 func TestResetPasswordRejectsStoredLoginIdentifiers(t *testing.T) {
 	m, _ := testModule(t)
 	ctx := context.Background()
-	u, err := m.RegisterUser(ctx, identity.UserCreateInput{Username: "same-as-password", Phone: "+14155552671", Email: "same@example.com"}, "correct horse")
+	u, err := m.RegisterUser(ctx, identity.UserCreateInput{Username: "same-as-password"}, "correct horse")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := m.ResetPassword(ctx, u.ID, u.Username); !errors.Is(err, identity.ErrWeakPassword) {
 		t.Fatalf("reset password equal to username error = %v", err)
-	}
-	if err := m.ResetPassword(ctx, u.ID, u.Phone); !errors.Is(err, identity.ErrWeakPassword) {
-		t.Fatalf("reset password equal to phone error = %v", err)
-	}
-	if err := m.ResetPassword(ctx, u.ID, u.Email); !errors.Is(err, identity.ErrWeakPassword) {
-		t.Fatalf("reset password equal to email error = %v", err)
 	}
 }
 
@@ -561,25 +544,25 @@ func TestValidateSchemaRejectsMissingAndIncompleteSchema(t *testing.T) {
 func TestValidateSchemaRejectsWrongIdentityIndexDefinition(t *testing.T) {
 	_, db := testModule(t)
 	ctx := context.Background()
-	if _, err := db.NewRaw("DROP INDEX identity_users_email_uq").Exec(ctx); err != nil {
+	if _, err := db.NewRaw("DROP INDEX identity_user_contacts_kind_value_uq").Exec(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.NewRaw("CREATE INDEX identity_users_email_uq ON identity_users (username)").Exec(ctx); err != nil {
+	if _, err := db.NewRaw("CREATE INDEX identity_user_contacts_kind_value_uq ON identity_user_contacts (user_id)").Exec(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if err := identity.ValidateSchema(ctx, db); err == nil || !strings.Contains(err.Error(), "identity_users_email_uq") {
+	if err := identity.ValidateSchema(ctx, db); err == nil || !strings.Contains(err.Error(), "identity_user_contacts_kind_value_uq") {
 		t.Fatalf("wrong identity index validation error = %v", err)
 	}
 }
 
-func TestValidateSchemaRejectsRemovedUsernameKey(t *testing.T) {
+func TestValidateSchemaRejectsLegacyContactColumns(t *testing.T) {
 	_, db := testModule(t)
 	ctx := context.Background()
-	if _, err := db.NewRaw("ALTER TABLE identity_users ADD COLUMN username_key TEXT").Exec(ctx); err != nil {
+	if _, err := db.NewRaw("ALTER TABLE identity_users ADD COLUMN phone_e164 TEXT").Exec(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if err := identity.ValidateSchema(ctx, db); err == nil || !strings.Contains(err.Error(), "username_key") {
-		t.Fatalf("stale username_key validation error = %v", err)
+	if err := identity.ValidateSchema(ctx, db); err == nil || !strings.Contains(err.Error(), "phone_e164") {
+		t.Fatalf("legacy contact column validation error = %v", err)
 	}
 }
 
@@ -611,7 +594,14 @@ func TestHumaRoutes(t *testing.T) {
 	mux := http.NewServeMux()
 	api := humago.New(mux, huma.DefaultConfig("test", "1.0.0"))
 	m.Register(api)
-	body := `{"username":"alice","phone":"+14155552671","email":"alice@example.com","password":"correct horse"}`
+	legacyReq := httptest.NewRequest(http.MethodPost, "/auth/register", strings.NewReader(`{"username":"legacy","phone":"+14155552671","password":"correct horse"}`))
+	legacyReq.Header.Set("Content-Type", "application/json")
+	legacyRes := httptest.NewRecorder()
+	mux.ServeHTTP(legacyRes, legacyReq)
+	if legacyRes.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("legacy registration status = %d body = %s", legacyRes.Code, legacyRes.Body.String())
+	}
+	body := `{"username":"alice","password":"correct horse"}`
 	req := httptest.NewRequest(http.MethodPost, "/auth/register", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	res := httptest.NewRecorder()
@@ -630,23 +620,48 @@ func TestHumaRoutes(t *testing.T) {
 		t.Fatalf("response = %#v", response)
 	}
 
-	protected := httptest.NewRequest(http.MethodGet, "/auth/session", nil)
+	protected := httptest.NewRequest(http.MethodGet, "/auth/profile", nil)
 	protected.Header.Set("Cookie", res.Header().Get("Set-Cookie"))
 	protectedRes := httptest.NewRecorder()
 	mux.ServeHTTP(protectedRes, protected)
 	if protectedRes.Code != http.StatusOK {
-		t.Fatalf("session status = %d body = %s", protectedRes.Code, protectedRes.Body.String())
+		t.Fatalf("profile status = %d body = %s", protectedRes.Code, protectedRes.Body.String())
 	}
 
-	loginReq := httptest.NewRequest(http.MethodPost, "/auth/login", strings.NewReader(`{"identifier":"ALICE@EXAMPLE.COM","password":"correct horse"}`))
+	cookie := res.Header().Get("Set-Cookie")
+	startReq := httptest.NewRequest(http.MethodPost, "/auth/profile/contacts/phone/verification", strings.NewReader(`{"value":"+14155552671"}`))
+	startReq.Header.Set("Content-Type", "application/json")
+	startReq.Header.Set("Cookie", cookie)
+	startRes := httptest.NewRecorder()
+	mux.ServeHTTP(startRes, startReq)
+	if startRes.Code != http.StatusOK {
+		t.Fatalf("contact verification start status = %d body = %s", startRes.Code, startRes.Body.String())
+	}
+	var verification struct {
+		VerificationID string `json:"verificationId"`
+	}
+	if err := json.Unmarshal(startRes.Body.Bytes(), &verification); err != nil {
+		t.Fatal(err)
+	}
+	confirmBody := fmt.Sprintf(`{"verificationId":%q,"code":"2468"}`, verification.VerificationID)
+	confirmReq := httptest.NewRequest(http.MethodPost, "/auth/profile/contacts/phone/verification/confirm", strings.NewReader(confirmBody))
+	confirmReq.Header.Set("Content-Type", "application/json")
+	confirmReq.Header.Set("Cookie", cookie)
+	confirmRes := httptest.NewRecorder()
+	mux.ServeHTTP(confirmRes, confirmReq)
+	if confirmRes.Code != http.StatusOK {
+		t.Fatalf("contact verification confirm status = %d body = %s", confirmRes.Code, confirmRes.Body.String())
+	}
+
+	loginReq := httptest.NewRequest(http.MethodPost, "/auth/login", strings.NewReader(`{"identifier":"alice","password":"correct horse"}`))
 	loginReq.Header.Set("Content-Type", "application/json")
 	loginRes := httptest.NewRecorder()
 	mux.ServeHTTP(loginRes, loginReq)
 	if loginRes.Code != http.StatusOK {
-		t.Fatalf("email login status = %d body = %s", loginRes.Code, loginRes.Body.String())
+		t.Fatalf("username login status = %d body = %s", loginRes.Code, loginRes.Body.String())
 	}
 
-	unauth := httptest.NewRequest(http.MethodGet, "/auth/session", nil)
+	unauth := httptest.NewRequest(http.MethodGet, "/auth/profile", nil)
 	unauthRes := httptest.NewRecorder()
 	mux.ServeHTTP(unauthRes, unauth)
 	if unauthRes.Code != http.StatusUnauthorized {
@@ -1244,4 +1259,30 @@ func TestLogoutClearsInvalidCookie(t *testing.T) {
 	if cookie := res.Header().Get("Set-Cookie"); !strings.Contains(cookie, "Max-Age=0") {
 		t.Fatalf("logout did not clear cookie: %q", cookie)
 	}
+}
+
+type testContactProvider struct {
+	mu   sync.Mutex
+	name string
+	code string
+	next int
+}
+
+func (p *testContactProvider) Name() string { return p.name }
+
+func (p *testContactProvider) Start(_ context.Context, _ identity.ContactVerificationStart) (identity.ContactVerificationChallenge, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.next++
+	return identity.ContactVerificationChallenge{
+		Provider:    p.name,
+		ChallengeID: fmt.Sprintf("%s-%d", p.name, p.next),
+	}, nil
+}
+
+func (p *testContactProvider) Verify(_ context.Context, input identity.ContactVerificationVerify) error {
+	if input.Code != p.code {
+		return identity.ErrVerificationInvalid
+	}
+	return nil
 }

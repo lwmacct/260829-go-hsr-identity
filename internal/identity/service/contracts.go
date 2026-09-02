@@ -100,6 +100,7 @@ func (IPBinding) Validate(record domain.SessionRecord, meta domain.RequestMeta) 
 
 type UnitOfWork interface {
 	Users() domain.UserRepository
+	Contacts() domain.ContactRepository
 	Passwords() domain.PasswordRepository
 	Sessions() domain.SessionRepository
 	Authorization() domain.AuthorizationRepository

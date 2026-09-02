@@ -19,20 +19,21 @@ type UserDeleteParticipant func(context.Context, bun.IDB, []domain.User) error
 
 type UserService struct {
 	repo              domain.UserRepository
+	contacts          domain.ContactRepository
 	tx                TxManager
 	now               domain.Clock
 	events            domain.EventSink
 	deleteParticipant UserDeleteParticipant
 }
 
-func NewUserService(repo domain.UserRepository, tx TxManager, now domain.Clock) (*UserService, error) {
+func NewUserService(repo domain.UserRepository, contacts domain.ContactRepository, tx TxManager, now domain.Clock) (*UserService, error) {
 	if repo == nil {
 		return nil, errors.New("identity: user repository is required")
 	}
 	if now == nil {
 		now = func() time.Time { return time.Now().UTC() }
 	}
-	return &UserService{repo: repo, tx: tx, now: now}, nil
+	return &UserService{repo: repo, contacts: contacts, tx: tx, now: now}, nil
 }
 
 func (s *UserService) SetDeleteParticipant(participant UserDeleteParticipant) {
@@ -49,14 +50,6 @@ func (s *UserService) SetEventSink(sink domain.EventSink) {
 
 func (s *UserService) Create(ctx context.Context, in UserCreateInput) (*domain.User, error) {
 	username, e := domain.NormalizeUsername(in.Username)
-	if e != nil {
-		return nil, e
-	}
-	phone, e := domain.NormalizePhone(in.Phone)
-	if e != nil {
-		return nil, e
-	}
-	email, e := domain.NormalizeEmail(in.Email)
 	if e != nil {
 		return nil, e
 	}
@@ -77,7 +70,7 @@ func (s *UserService) Create(ctx context.Context, in UserCreateInput) (*domain.U
 	if state == domain.StateDisabled {
 		disabled = &now
 	}
-	user, err := s.repo.CreateUser(ctx, domain.UserCreate{ID: id, Username: username, Phone: phone, DisplayName: display, Email: email, AvatarURL: strings.TrimSpace(in.AvatarURL), State: state, DisabledAt: disabled, CreatedAt: now, UpdatedAt: now})
+	user, err := s.repo.CreateUser(ctx, domain.UserCreate{ID: id, Username: username, DisplayName: display, AvatarURL: strings.TrimSpace(in.AvatarURL), State: state, DisabledAt: disabled, CreatedAt: now, UpdatedAt: now})
 	if err == nil {
 		emitEvent(ctx, s.events, domain.Event{Type: domain.EventUserCreated, At: now, UserID: user.ID, Username: user.Username})
 	}
@@ -158,16 +151,8 @@ func (s *UserService) UpdateProfile(ctx context.Context, id domain.UserID, in Us
 	if id, err = domain.NormalizeUserID(id); err != nil {
 		return nil, err
 	}
-	phone, err := normalizeOptionalPhone(in.Phone)
-	if err != nil {
-		return nil, err
-	}
-	email, err := normalizeOptionalEmail(in.Email)
-	if err != nil {
-		return nil, err
-	}
 	avatarURL := normalizeOptionalText(in.AvatarURL)
-	user, err := s.repo.UpdateUserProfile(ctx, id, domain.UserProfilePatch{DisplayName: strings.TrimSpace(in.DisplayName), Phone: phone, Email: email, AvatarURL: avatarURL, UpdatedAt: s.now().UTC()})
+	user, err := s.repo.UpdateUserProfile(ctx, id, domain.UserProfilePatch{DisplayName: strings.TrimSpace(in.DisplayName), AvatarURL: avatarURL, UpdatedAt: s.now().UTC()})
 	if err == nil {
 		emitEvent(ctx, s.events, domain.Event{Type: domain.EventUserUpdated, At: user.UpdatedAt, UserID: user.ID, Username: user.Username})
 	}
@@ -304,30 +289,30 @@ func (s *UserService) EnsureActive(u *domain.User) error {
 	return nil
 }
 
+func (s *UserService) LoginIdentifiers(ctx context.Context, id domain.UserID) ([]string, error) {
+	if s == nil || s.contacts == nil {
+		return nil, errors.New("identity: contact repository is required")
+	}
+	user, err := s.UserByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	contacts, err := s.contacts.ListUserContacts(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	identifiers := []string{user.Username}
+	for _, contact := range contacts {
+		if contact.VerifiedAt.IsZero() {
+			continue
+		}
+		identifiers = append(identifiers, contact.Value)
+	}
+	return identifiers, nil
+}
+
 type UserCreateInput = domain.UserCreateInput
 type UserUpdateProfileInput = domain.UserUpdateProfileInput
-
-func normalizeOptionalPhone(value *string) (*string, error) {
-	if value == nil {
-		return nil, nil
-	}
-	normalized, err := domain.NormalizePhone(*value)
-	if err != nil {
-		return nil, err
-	}
-	return &normalized, nil
-}
-
-func normalizeOptionalEmail(value *string) (*string, error) {
-	if value == nil {
-		return nil, nil
-	}
-	normalized, err := domain.NormalizeEmail(*value)
-	if err != nil {
-		return nil, err
-	}
-	return &normalized, nil
-}
 
 func normalizeOptionalText(value *string) *string {
 	if value == nil {

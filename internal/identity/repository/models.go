@@ -12,9 +12,7 @@ type UserModel struct {
 	bun.BaseModel `bun:"table:identity_users,alias:u"`
 	ID            string     `bun:"id,pk,type:uuid"`
 	Username      string     `bun:"username,notnull"`
-	PhoneE164     *string    `bun:"phone_e164"`
 	DisplayName   string     `bun:"display_name,notnull"`
-	Email         *string    `bun:"email"`
 	AvatarURL     string     `bun:"avatar_url,notnull"`
 	State         string     `bun:"state,notnull"`
 	DisabledAt    *time.Time `bun:"disabled_at,nullzero"`
@@ -27,11 +25,52 @@ func (*UserModel) BeforeCreateTable(_ context.Context, query *bun.CreateTableQue
 	query.ColumnExpr("CONSTRAINT identity_users_state_chk CHECK (state IN ('active', 'disabled'))")
 	if query.Dialect().Name().String() == "pg" {
 		query.ColumnExpr("CONSTRAINT identity_users_username_chk CHECK (username ~ '^[a-z]([a-z0-9_-]*[a-z0-9])?$' AND length(username) BETWEEN 1 AND 64)")
-		query.ColumnExpr("CONSTRAINT identity_users_phone_chk CHECK (phone_e164 IS NULL OR (phone_e164 ~ '^\\+[1-9][0-9]{6,14}$'))")
 	} else {
 		query.ColumnExpr("CONSTRAINT identity_users_username_chk CHECK (length(username) BETWEEN 1 AND 64 AND substr(username, 1, 1) GLOB '[a-z]' AND substr(username, length(username), 1) GLOB '[a-z0-9]' AND username NOT GLOB '*[^a-z0-9_-]*')")
-		query.ColumnExpr("CONSTRAINT identity_users_phone_chk CHECK (phone_e164 IS NULL OR (length(phone_e164) BETWEEN 8 AND 16 AND substr(phone_e164, 1, 1) = '+' AND substr(phone_e164, 2, 1) GLOB '[1-9]' AND substr(phone_e164, 2) NOT GLOB '*[^0-9]*'))")
 	}
+	addUUIDv7Check(query, "id")
+	return nil
+}
+
+type UserContactModel struct {
+	bun.BaseModel `bun:"table:identity_user_contacts,alias:uc"`
+	ID            string    `bun:"id,pk,type:uuid"`
+	UserID        string    `bun:"user_id,type:uuid,notnull"`
+	Kind          string    `bun:"kind,notnull"`
+	Value         string    `bun:"normalized_value,notnull"`
+	VerifiedAt    time.Time `bun:"verified_at,notnull"`
+	CreatedAt     time.Time `bun:"created_at,notnull"`
+	UpdatedAt     time.Time `bun:"updated_at,notnull"`
+}
+
+func (*UserContactModel) BeforeCreateTable(_ context.Context, query *bun.CreateTableQuery) error {
+	query.ForeignKey("(user_id) REFERENCES identity_users (id) ON DELETE CASCADE")
+	query.ColumnExpr("CONSTRAINT identity_user_contacts_kind_chk CHECK (kind IN ('phone', 'email'))")
+	query.ColumnExpr("CONSTRAINT identity_user_contacts_value_chk CHECK (normalized_value <> '')")
+	addUUIDv7Check(query, "id")
+	return nil
+}
+
+type ContactVerificationModel struct {
+	bun.BaseModel       `bun:"table:identity_contact_verifications,alias:cv"`
+	ID                  string     `bun:"id,pk,type:uuid"`
+	UserID              string     `bun:"user_id,type:uuid,notnull"`
+	Kind                string     `bun:"kind,notnull"`
+	Value               string     `bun:"normalized_value,notnull"`
+	Provider            string     `bun:"provider,notnull"`
+	ProviderChallengeID string     `bun:"provider_challenge_id,notnull"`
+	Status              string     `bun:"status,notnull"`
+	AttemptCount        int        `bun:"attempt_count,notnull"`
+	ExpiresAt           time.Time  `bun:"expires_at,notnull"`
+	CreatedAt           time.Time  `bun:"created_at,notnull"`
+	ConsumedAt          *time.Time `bun:"consumed_at,nullzero"`
+}
+
+func (*ContactVerificationModel) BeforeCreateTable(_ context.Context, query *bun.CreateTableQuery) error {
+	query.ForeignKey("(user_id) REFERENCES identity_users (id) ON DELETE CASCADE")
+	query.ColumnExpr("CONSTRAINT identity_contact_verifications_kind_chk CHECK (kind IN ('phone', 'email'))")
+	query.ColumnExpr("CONSTRAINT identity_contact_verifications_status_chk CHECK (status IN ('pending', 'consumed', 'expired', 'cancelled', 'failed'))")
+	query.ColumnExpr("CONSTRAINT identity_contact_verifications_value_chk CHECK (normalized_value <> '')")
 	addUUIDv7Check(query, "id")
 	return nil
 }

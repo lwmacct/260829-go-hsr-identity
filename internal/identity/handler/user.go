@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/danielgtaylor/huma/v2"
@@ -12,9 +13,7 @@ import (
 type userView struct {
 	ID          string     `json:"id" format:"uuid"`
 	Username    string     `json:"username"`
-	Phone       string     `json:"phone,omitempty"`
 	DisplayName string     `json:"displayName"`
-	Email       string     `json:"email,omitempty"`
 	AvatarURL   string     `json:"avatarUrl,omitempty"`
 	State       string     `json:"state"`
 	DisabledAt  *time.Time `json:"disabledAt,omitempty"`
@@ -31,6 +30,53 @@ type userListBody struct {
 }
 type userListResponse struct{ Body userListBody }
 type userResponse struct{ Body userView }
+type profileResponse struct{ Body profileView }
+type profileView struct {
+	ID          string              `json:"id" format:"uuid"`
+	Username    string              `json:"username"`
+	DisplayName string              `json:"displayName"`
+	AvatarURL   string              `json:"avatarUrl,omitempty"`
+	Contacts    profileContactsView `json:"contacts"`
+}
+type profileContactsView struct {
+	Phone *contactView `json:"phone,omitempty"`
+	Email *contactView `json:"email,omitempty"`
+}
+type contactView struct {
+	MaskedValue string    `json:"maskedValue"`
+	VerifiedAt  time.Time `json:"verifiedAt"`
+}
+type profilePatchBody struct {
+	DisplayName *string `json:"displayName,omitempty"`
+	AvatarURL   *string `json:"avatarUrl,omitempty"`
+}
+type profilePatchInput struct{ Body profilePatchBody }
+type contactKindPathInput struct {
+	Kind string `path:"kind" enum:"phone,email"`
+}
+type contactVerificationStartBody struct {
+	Value string `json:"value" minLength:"1" maxLength:"254"`
+}
+type contactVerificationStartInput struct {
+	Kind string `path:"kind" enum:"phone,email"`
+	Body contactVerificationStartBody
+}
+type contactVerificationConfirmBody struct {
+	VerificationID string `json:"verificationId" format:"uuid"`
+	Code           string `json:"code" minLength:"1" maxLength:"32"`
+}
+type contactVerificationConfirmInput struct {
+	Kind string `path:"kind" enum:"phone,email"`
+	Body contactVerificationConfirmBody
+}
+type contactVerificationResponse struct {
+	Body contactVerificationView
+}
+type contactVerificationView struct {
+	VerificationID    string    `json:"verificationId" format:"uuid"`
+	ExpiresAt         time.Time `json:"expiresAt"`
+	RetryAfterSeconds int       `json:"retryAfterSeconds"`
+}
 type userPathInput struct {
 	UserID string `path:"userID" format:"uuid"`
 }
@@ -42,8 +88,6 @@ type userListInput struct {
 }
 type userProfileBody struct {
 	DisplayName string  `json:"displayName" minLength:"1"`
-	Phone       *string `json:"phone,omitempty"`
-	Email       *string `json:"email,omitempty"`
 	AvatarURL   *string `json:"avatarUrl,omitempty"`
 }
 type userProfileInput struct {
@@ -52,9 +96,7 @@ type userProfileInput struct {
 }
 type adminCreateBody struct {
 	Username    string `json:"username" minLength:"1" maxLength:"64"`
-	Phone       string `json:"phone,omitempty" maxLength:"16"`
 	DisplayName string `json:"displayName,omitempty"`
-	Email       string `json:"email,omitempty" maxLength:"254"`
 	AvatarURL   string `json:"avatarUrl,omitempty"`
 	Password    string `json:"password" minLength:"1"`
 }
@@ -108,7 +150,7 @@ func (e *Endpoint) adminCreate(ctx context.Context, input *adminCreateInput) (*u
 		return nil, mapError(err, false)
 	}
 	b := input.Body
-	u, err := e.services.Accounts.Register(ctx, domain.UserCreateInput{Username: b.Username, Phone: b.Phone, DisplayName: b.DisplayName, Email: b.Email, AvatarURL: b.AvatarURL}, b.Password)
+	u, err := e.services.Accounts.Register(ctx, domain.UserCreateInput{Username: b.Username, DisplayName: b.DisplayName, AvatarURL: b.AvatarURL}, b.Password)
 	if err != nil {
 		return nil, mapError(err, false)
 	}
@@ -136,7 +178,7 @@ func (e *Endpoint) adminUpdate(ctx context.Context, input *userProfileInput) (*u
 	if err != nil {
 		return nil, mapError(err, false)
 	}
-	u, err := e.services.Users.UpdateProfile(ctx, id, domain.UserUpdateProfileInput{DisplayName: input.Body.DisplayName, Phone: input.Body.Phone, Email: input.Body.Email, AvatarURL: input.Body.AvatarURL})
+	u, err := e.services.Users.UpdateProfile(ctx, id, domain.UserUpdateProfileInput{DisplayName: input.Body.DisplayName, AvatarURL: input.Body.AvatarURL})
 	if err != nil {
 		return nil, mapError(err, false)
 	}
@@ -186,11 +228,151 @@ func (e *Endpoint) adminDelete(ctx context.Context, input *userPathInput) (*noCo
 	return &noContent{}, nil
 }
 
+func (e *Endpoint) currentProfile(ctx context.Context, _ *struct{}) (*profileResponse, error) {
+	principal, ok := domain.PrincipalFromContext(ctx)
+	if !ok || !principal.Active() {
+		return nil, huma.Error401Unauthorized("unauthorized")
+	}
+	user, err := e.services.Users.UserByID(ctx, principal.Subject)
+	if err != nil {
+		return nil, mapError(err, false)
+	}
+	return e.profileResponse(ctx, user)
+}
+
+func (e *Endpoint) updateCurrentProfile(ctx context.Context, input *profilePatchInput) (*profileResponse, error) {
+	principal, ok := domain.PrincipalFromContext(ctx)
+	if !ok || !principal.Active() {
+		return nil, huma.Error401Unauthorized("unauthorized")
+	}
+	displayName := principal.User.DisplayName
+	if input.Body.DisplayName != nil {
+		displayName = *input.Body.DisplayName
+	}
+	user, err := e.services.Users.UpdateProfile(ctx, principal.Subject, domain.UserUpdateProfileInput{
+		DisplayName: displayName,
+		AvatarURL:   input.Body.AvatarURL,
+	})
+	if err != nil {
+		return nil, mapError(err, false)
+	}
+	return e.profileResponse(ctx, user)
+}
+
+func (e *Endpoint) startContactVerification(ctx context.Context, input *contactVerificationStartInput) (*contactVerificationResponse, error) {
+	principal, ok := domain.PrincipalFromContext(ctx)
+	if !ok || !principal.Active() {
+		return nil, huma.Error401Unauthorized("unauthorized")
+	}
+	if e.services.Contacts == nil {
+		return nil, mapError(domain.ErrVerificationUnsupported, false)
+	}
+	if err := requestMetaErrorFromContext(ctx); err != nil {
+		return nil, mapError(err, false)
+	}
+	record, err := e.services.Contacts.StartVerification(ctx, principal.Subject, domain.ContactKind(input.Kind), input.Body.Value, requestMetaFromContext(ctx))
+	if err != nil {
+		return nil, mapError(err, false)
+	}
+	return &contactVerificationResponse{Body: contactVerificationView{
+		VerificationID:    record.ID.String(),
+		ExpiresAt:         record.ExpiresAt,
+		RetryAfterSeconds: int(e.services.Contacts.ResendInterval().Seconds()),
+	}}, nil
+}
+
+func (e *Endpoint) confirmContactVerification(ctx context.Context, input *contactVerificationConfirmInput) (*profileResponse, error) {
+	principal, ok := domain.PrincipalFromContext(ctx)
+	if !ok || !principal.Active() {
+		return nil, huma.Error401Unauthorized("unauthorized")
+	}
+	if e.services.Contacts == nil {
+		return nil, mapError(domain.ErrVerificationUnsupported, false)
+	}
+	if err := requestMetaErrorFromContext(ctx); err != nil {
+		return nil, mapError(err, false)
+	}
+	verificationID, err := domain.ParseContactVerificationID(input.Body.VerificationID)
+	if err != nil {
+		return nil, mapError(err, false)
+	}
+	_, err = e.services.Contacts.ConfirmVerification(ctx, principal.Subject, domain.ContactKind(input.Kind), verificationID, input.Body.Code, requestMetaFromContext(ctx))
+	if err != nil {
+		return nil, mapError(err, false)
+	}
+	user, err := e.services.Users.UserByID(ctx, principal.Subject)
+	if err != nil {
+		return nil, mapError(err, false)
+	}
+	return e.profileResponse(ctx, user)
+}
+
+func (e *Endpoint) unbindContact(ctx context.Context, input *contactKindPathInput) (*noContent, error) {
+	principal, ok := domain.PrincipalFromContext(ctx)
+	if !ok || !principal.Active() {
+		return nil, huma.Error401Unauthorized("unauthorized")
+	}
+	if e.services.Contacts == nil {
+		return nil, mapError(domain.ErrVerificationUnsupported, false)
+	}
+	if err := e.services.Contacts.Unbind(ctx, principal.Subject, domain.ContactKind(input.Kind)); err != nil {
+		return nil, mapError(err, false)
+	}
+	return &noContent{}, nil
+}
+
+func (e *Endpoint) profileResponse(ctx context.Context, user *domain.User) (*profileResponse, error) {
+	if user == nil || e.services.Contacts == nil {
+		return nil, mapError(domain.ErrNotFound, false)
+	}
+	contacts, err := e.services.Contacts.ListUserContacts(ctx, user.ID)
+	if err != nil {
+		return nil, mapError(err, false)
+	}
+	return &profileResponse{Body: profileViewFrom(user, contacts)}, nil
+}
+
+func profileViewFrom(user *domain.User, contacts []domain.UserContact) profileView {
+	view := profileView{
+		ID: user.ID.String(), Username: user.Username, DisplayName: user.DisplayName,
+		AvatarURL: user.AvatarURL,
+	}
+	for i := range contacts {
+		contact := contacts[i]
+		item := &contactView{MaskedValue: maskContact(contact.Kind, contact.Value), VerifiedAt: contact.VerifiedAt}
+		switch contact.Kind {
+		case domain.ContactKindPhone:
+			view.Contacts.Phone = item
+		case domain.ContactKindEmail:
+			view.Contacts.Email = item
+		}
+	}
+	return view
+}
+
+func maskContact(kind domain.ContactKind, value string) string {
+	switch kind {
+	case domain.ContactKindPhone:
+		if len(value) <= 4 {
+			return "****"
+		}
+		return value[:len(value)-4] + "****"
+	case domain.ContactKindEmail:
+		at := strings.IndexByte(value, '@')
+		if at <= 0 {
+			return "***"
+		}
+		return value[:1] + "***" + value[at:]
+	default:
+		return "***"
+	}
+}
+
 func userViewFrom(u *domain.User) userView {
 	if u == nil {
 		return userView{}
 	}
-	return userView{ID: u.ID.String(), Username: u.Username, Phone: u.Phone, DisplayName: u.DisplayName, Email: u.Email, AvatarURL: u.AvatarURL, State: string(u.State), DisabledAt: u.DisabledAt, LastLoginAt: u.LastLoginAt, CreatedAt: u.CreatedAt, UpdatedAt: u.UpdatedAt}
+	return userView{ID: u.ID.String(), Username: u.Username, DisplayName: u.DisplayName, AvatarURL: u.AvatarURL, State: string(u.State), DisabledAt: u.DisabledAt, LastLoginAt: u.LastLoginAt, CreatedAt: u.CreatedAt, UpdatedAt: u.UpdatedAt}
 }
 func sessionViewFromPrincipal(p *domain.Principal) sessionView {
 	if p == nil {

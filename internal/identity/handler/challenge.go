@@ -17,6 +17,12 @@ type configView struct {
 	LoginEnabled        bool                      `json:"loginEnabled"`
 	RegistrationEnabled bool                      `json:"registrationEnabled"`
 	Challenge           *humanChallengeConfigView `json:"challenge,omitempty"`
+	Contacts            contactConfigView         `json:"contacts"`
+}
+
+type contactConfigView struct {
+	PhoneEnabled bool `json:"phoneEnabled"`
+	EmailEnabled bool `json:"emailEnabled"`
 }
 
 type challengeBody struct {

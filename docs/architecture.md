@@ -2,13 +2,25 @@
 
 ## Ownership
 
-identity owns users, password credentials, sessions, account lifecycle, generic role-based access control, and the human-challenge lifecycle contract. IDs are database UUID values generated as UUIDv7 by Go 1.27; PostgreSQL 18 and SQLite schema checks reject malformed or non-v7 IDs. The reusable image and remote token providers live in `pkg/identity/challenge`; host applications own external login providers, SSH keys, custom challenge providers, business permission vocabulary, audit storage, and domain relationships. SQLite is the default database and PostgreSQL 18+ is also supported.
+identity owns users, password credentials, sessions, account lifecycle, verified
+phone/email contacts, contact verification lifecycle, generic role-based access
+control, and the human-challenge lifecycle contract. IDs are database UUID
+values generated as UUIDv7 by Go 1.27; PostgreSQL 18 and SQLite schema checks
+reject malformed or non-v7 IDs. The reusable image and remote token providers
+live in `pkg/identity/challenge`; host applications own external login
+providers, SSH keys, business permission vocabulary, audit storage, and domain
+relationships. SQLite is the default database and PostgreSQL 18+ is also
+supported.
 
 ## Layer contracts
 
 - `handler` knows Huma, HTTP, cookies, headers, DTOs, and error status codes.
 - `service` knows domain rules, password hashing, session lifecycle, RBAC evaluation, authorization callbacks, and cross-repository transactions. It does not import Huma; its transaction participant boundary may use Bun because the module is intentionally Bun-coupled.
 - `repository` knows Bun models and queries. It maps `sql.ErrNoRows` and constraint errors to identity sentinels.
+- Contact verification providers are independent phone/email contracts. The
+  host supplies delivery and provider-side code verification; identity stores
+  pending requests, enforces ownership and expiry, and commits the verified
+  contact atomically.
 - Human challenges are an extensible boundary: verification and challenge creation are separate contracts. Hosts can use the built-in providers in `pkg/identity/challenge` or supply custom implementations; identity owns the public configuration and challenge endpoints, independently configurable login/registration enforcement, and the module methods used by protected host actions.
 - `pkg/identity.Module` is the composition root and the only supported default entry point.
 - `pkg/identity.Module` implements the host-facing `identity.UserDirectory`;
@@ -45,8 +57,11 @@ transaction to a writer lock.
   form.
 - Username, phone, and email have independent unique database indexes. Login
   resolves the input identifier type first and performs one indexed lookup.
-- Phone and email fields are login identifiers only; their ownership is not
-  considered verified without an explicit host-owned verification flow.
+- Phone and email are stored in `identity_user_contacts`, never on
+  `identity_users`. Only rows with a non-null `verified_at` participate in
+  login. Each contact kind has an independent provider and unique constraint.
+- Contact verification IDs are user-bound opaque UUIDv7 values. Contact values
+  and verification codes are not emitted in events or logs.
 - Login guards receive a bounded opaque key derived from the normalized
   identifier. Raw usernames, phone numbers, emails, and oversized malformed
   input are not passed through the guard contract.

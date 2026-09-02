@@ -39,7 +39,7 @@ func NewAccountService(users *UserService, passwords *PasswordService, sessions 
 	return &AccountService{users: users, passwords: passwords, sessions: sessions, authorization: authorization, tx: tx}, nil
 }
 func (s *AccountService) Register(ctx context.Context, in UserCreateInput, password string) (*domain.User, error) {
-	if e := s.passwords.ValidateIdentifiers([]string{in.Username, in.Phone, in.Email}, password); e != nil {
+	if e := s.passwords.ValidateIdentifiers([]string{in.Username}, password); e != nil {
 		return nil, e
 	}
 	hash, e := s.passwords.Hash(password)
@@ -96,7 +96,7 @@ func (s *AccountService) createUserWithRoles(ctx context.Context, in UserCreateI
 	if in.State != "" && in.State != domain.StateActive {
 		return nil, domain.ErrInvalidState
 	}
-	if err := s.passwords.ValidateIdentifiers([]string{in.Username, in.Phone, in.Email}, password); err != nil {
+	if err := s.passwords.ValidateIdentifiers([]string{in.Username}, password); err != nil {
 		return nil, err
 	}
 	hash, err := s.passwords.Hash(password)
@@ -136,7 +136,7 @@ func (s *AccountService) createUserWithRoles(ctx context.Context, in UserCreateI
 // RegisterAndLogin atomically creates an account, its password, a Session,
 // and the first last-login timestamp. The issued token is returned only once.
 func (s *AccountService) RegisterAndLogin(ctx context.Context, in UserCreateInput, password string, meta domain.RequestMeta) (*domain.User, *domain.IssuedSession, error) {
-	if e := s.passwords.ValidateIdentifiers([]string{in.Username, in.Phone, in.Email}, password); e != nil {
+	if e := s.passwords.ValidateIdentifiers([]string{in.Username}, password); e != nil {
 		return nil, nil, e
 	}
 	hash, e := s.passwords.Hash(password)
@@ -305,7 +305,11 @@ func (s *AccountService) ChangePassword(ctx context.Context, id domain.UserID, c
 		if e := pw.AuthenticateUser(c, id, current); e != nil {
 			return e
 		}
-		if e := pw.ValidateIdentifiers(userLoginIdentifiers(user), next); e != nil {
+		identifiers, e := users.LoginIdentifiers(c, id)
+		if e != nil {
+			return e
+		}
+		if e := pw.ValidateIdentifiers(identifiers, next); e != nil {
 			return e
 		}
 		h, e := pw.Hash(next)
@@ -330,11 +334,15 @@ func (s *AccountService) ResetPassword(ctx context.Context, id domain.UserID, ne
 		if err != nil {
 			return err
 		}
-		user, err := users.UserByID(c, id)
+		_, err = users.UserByID(c, id)
 		if err != nil {
 			return err
 		}
-		if err = s.passwords.ValidateIdentifiers(userLoginIdentifiers(user), next); err != nil {
+		identifiers, err := users.LoginIdentifiers(c, id)
+		if err != nil {
+			return err
+		}
+		if err = s.passwords.ValidateIdentifiers(identifiers, next); err != nil {
 			return err
 		}
 		h, err := s.passwords.Hash(next)
@@ -358,7 +366,7 @@ func (s *AccountService) ResetPassword(ctx context.Context, id domain.UserID, ne
 }
 
 func (s *AccountService) userService(uow UnitOfWork) (*UserService, error) {
-	return NewUserService(uow.Users(), nil, s.users.now)
+	return NewUserService(uow.Users(), uow.Contacts(), nil, s.users.now)
 }
 
 func (s *AccountService) passwordService(uow UnitOfWork) (*PasswordService, error) {
@@ -366,13 +374,6 @@ func (s *AccountService) passwordService(uow UnitOfWork) (*PasswordService, erro
 }
 
 func timePtr(value time.Time) *time.Time { return &value }
-
-func userLoginIdentifiers(user *domain.User) []string {
-	if user == nil {
-		return nil
-	}
-	return []string{user.Username, user.Phone, user.Email}
-}
 
 func normalizeRequiredRoleCodes(codes []string) ([]string, error) {
 	if len(codes) == 0 {

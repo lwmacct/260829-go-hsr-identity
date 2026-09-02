@@ -19,17 +19,25 @@ type UserID uuid.UUID
 type SessionID uuid.UUID
 type RoleID uuid.UUID
 type PermissionID uuid.UUID
+type ContactID uuid.UUID
+type ContactVerificationID uuid.UUID
 type State string
 
-func (id UserID) String() string       { return uuid.UUID(id).String() }
-func (id SessionID) String() string    { return uuid.UUID(id).String() }
-func (id RoleID) String() string       { return uuid.UUID(id).String() }
-func (id PermissionID) String() string { return uuid.UUID(id).String() }
+func (id UserID) String() string                { return uuid.UUID(id).String() }
+func (id SessionID) String() string             { return uuid.UUID(id).String() }
+func (id RoleID) String() string                { return uuid.UUID(id).String() }
+func (id PermissionID) String() string          { return uuid.UUID(id).String() }
+func (id ContactID) String() string             { return uuid.UUID(id).String() }
+func (id ContactVerificationID) String() string { return uuid.UUID(id).String() }
 
 func (id UserID) MarshalText() ([]byte, error)       { return []byte(id.String()), nil }
 func (id SessionID) MarshalText() ([]byte, error)    { return []byte(id.String()), nil }
 func (id RoleID) MarshalText() ([]byte, error)       { return []byte(id.String()), nil }
 func (id PermissionID) MarshalText() ([]byte, error) { return []byte(id.String()), nil }
+func (id ContactID) MarshalText() ([]byte, error)    { return []byte(id.String()), nil }
+func (id ContactVerificationID) MarshalText() ([]byte, error) {
+	return []byte(id.String()), nil
+}
 
 func (id *UserID) UnmarshalText(raw []byte) error {
 	parsed, err := ParseUserID(string(raw))
@@ -60,6 +68,24 @@ func (id *RoleID) UnmarshalText(raw []byte) error {
 
 func (id *PermissionID) UnmarshalText(raw []byte) error {
 	parsed, err := ParsePermissionID(string(raw))
+	if err != nil {
+		return err
+	}
+	*id = parsed
+	return nil
+}
+
+func (id *ContactID) UnmarshalText(raw []byte) error {
+	parsed, err := ParseContactID(string(raw))
+	if err != nil {
+		return err
+	}
+	*id = parsed
+	return nil
+}
+
+func (id *ContactVerificationID) UnmarshalText(raw []byte) error {
+	parsed, err := ParseContactVerificationID(string(raw))
 	if err != nil {
 		return err
 	}
@@ -156,6 +182,36 @@ func ParsePermissionID(raw string) (PermissionID, error) {
 	return NormalizePermissionID(PermissionID(id))
 }
 
+func NormalizeContactID(id ContactID) (ContactID, error) {
+	if !isUUIDv7(uuid.UUID(id)) {
+		return ContactID(uuid.Nil()), ErrInvalid
+	}
+	return id, nil
+}
+
+func NormalizeContactVerificationID(id ContactVerificationID) (ContactVerificationID, error) {
+	if !isUUIDv7(uuid.UUID(id)) {
+		return ContactVerificationID(uuid.Nil()), ErrInvalid
+	}
+	return id, nil
+}
+
+func ParseContactID(raw string) (ContactID, error) {
+	id, err := uuid.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return ContactID(uuid.Nil()), ErrInvalid
+	}
+	return NormalizeContactID(ContactID(id))
+}
+
+func ParseContactVerificationID(raw string) (ContactVerificationID, error) {
+	id, err := uuid.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return ContactVerificationID(uuid.Nil()), ErrInvalid
+	}
+	return NormalizeContactVerificationID(ContactVerificationID(id))
+}
+
 // Authorizer action names are stable integration points for host applications.
 const (
 	ActionUserList             = "identity.user.list"
@@ -179,13 +235,9 @@ const (
 )
 
 type User struct {
-	ID       UserID
-	Username string
-	// Phone and Email are canonical password-login identifiers. Their presence
-	// does not prove ownership; verification and recovery flows are host-owned.
-	Phone       string
+	ID          UserID
+	Username    string
 	DisplayName string
-	Email       string
 	AvatarURL   string
 	State       State
 	DisabledAt  *time.Time
@@ -225,26 +277,31 @@ type RequestMeta struct {
 type EventType string
 
 const (
-	EventUserCreated            EventType = "identity.user.created"
-	EventUserUpdated            EventType = "identity.user.updated"
-	EventUserStateChanged       EventType = "identity.user.state_changed"
-	EventUserDeleted            EventType = "identity.user.deleted"
-	EventLoginSucceeded         EventType = "identity.login.succeeded"
-	EventLoginFailed            EventType = "identity.login.failed"
-	EventPasswordChanged        EventType = "identity.password.changed"
-	EventPasswordReset          EventType = "identity.password.reset"
-	EventSessionCreated         EventType = "identity.session.created"
-	EventSessionRevoked         EventType = "identity.session.revoked"
-	EventUserSessionsRevoked    EventType = "identity.session.revoked_for_user"
-	EventExpiredSessionsDeleted EventType = "identity.session.expired_deleted"
-	EventRoleCreated            EventType = "identity.role.created"
-	EventRoleUpdated            EventType = "identity.role.updated"
-	EventRoleDeleted            EventType = "identity.role.deleted"
-	EventPermissionCreated      EventType = "identity.permission.created"
-	EventPermissionUpdated      EventType = "identity.permission.updated"
-	EventPermissionDeleted      EventType = "identity.permission.deleted"
-	EventUserRolesChanged       EventType = "identity.user_roles.changed"
-	EventRolePermissionsChanged EventType = "identity.role_permissions.changed"
+	EventUserCreated                  EventType = "identity.user.created"
+	EventUserUpdated                  EventType = "identity.user.updated"
+	EventUserStateChanged             EventType = "identity.user.state_changed"
+	EventUserDeleted                  EventType = "identity.user.deleted"
+	EventLoginSucceeded               EventType = "identity.login.succeeded"
+	EventLoginFailed                  EventType = "identity.login.failed"
+	EventPasswordChanged              EventType = "identity.password.changed"
+	EventPasswordReset                EventType = "identity.password.reset"
+	EventSessionCreated               EventType = "identity.session.created"
+	EventSessionRevoked               EventType = "identity.session.revoked"
+	EventUserSessionsRevoked          EventType = "identity.session.revoked_for_user"
+	EventExpiredSessionsDeleted       EventType = "identity.session.expired_deleted"
+	EventRoleCreated                  EventType = "identity.role.created"
+	EventRoleUpdated                  EventType = "identity.role.updated"
+	EventRoleDeleted                  EventType = "identity.role.deleted"
+	EventPermissionCreated            EventType = "identity.permission.created"
+	EventPermissionUpdated            EventType = "identity.permission.updated"
+	EventPermissionDeleted            EventType = "identity.permission.deleted"
+	EventUserRolesChanged             EventType = "identity.user_roles.changed"
+	EventRolePermissionsChanged       EventType = "identity.role_permissions.changed"
+	EventContactVerificationStarted   EventType = "identity.contact.verification_started"
+	EventContactVerificationSucceeded EventType = "identity.contact.verification_succeeded"
+	EventContactVerificationFailed    EventType = "identity.contact.verification_failed"
+	EventContactBound                 EventType = "identity.contact.bound"
+	EventContactUnbound               EventType = "identity.contact.unbound"
 )
 
 // Event is a committed identity fact exposed to host audit and telemetry
@@ -311,9 +368,7 @@ type LoginGuard interface {
 type UserCreate struct {
 	ID          UserID
 	Username    string
-	Phone       string
 	DisplayName string
-	Email       string
 	AvatarURL   string
 	State       State
 	DisabledAt  *time.Time
@@ -323,9 +378,7 @@ type UserCreate struct {
 
 type UserCreateInput struct {
 	Username    string
-	Phone       string
 	DisplayName string
-	Email       string
 	AvatarURL   string
 	State       State
 }
@@ -340,17 +393,85 @@ type UserProvisionInput struct {
 
 type UserUpdateProfileInput struct {
 	DisplayName string
-	Phone       *string
-	Email       *string
 	AvatarURL   *string
 }
 
 type UserProfilePatch struct {
 	DisplayName string
-	Phone       *string
-	Email       *string
 	AvatarURL   *string
 	UpdatedAt   time.Time
+}
+
+type ContactKind string
+
+const (
+	ContactKindPhone ContactKind = "phone"
+	ContactKindEmail ContactKind = "email"
+)
+
+func (k ContactKind) Valid() bool {
+	return k == ContactKindPhone || k == ContactKindEmail
+}
+
+type ContactVerificationStatus string
+
+const (
+	ContactVerificationPending   ContactVerificationStatus = "pending"
+	ContactVerificationConsumed  ContactVerificationStatus = "consumed"
+	ContactVerificationExpired   ContactVerificationStatus = "expired"
+	ContactVerificationCancelled ContactVerificationStatus = "cancelled"
+	ContactVerificationFailed    ContactVerificationStatus = "failed"
+)
+
+type UserContact struct {
+	ID         ContactID
+	UserID     UserID
+	Kind       ContactKind
+	Value      string
+	VerifiedAt time.Time
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
+}
+
+type ContactVerification struct {
+	ID                  ContactVerificationID
+	UserID              UserID
+	Kind                ContactKind
+	Value               string
+	Provider            string
+	ProviderChallengeID string
+	Status              ContactVerificationStatus
+	AttemptCount        int
+	ExpiresAt           time.Time
+	CreatedAt           time.Time
+	ConsumedAt          *time.Time
+}
+
+type ContactVerificationStart struct {
+	UserID      UserID
+	Kind        ContactKind
+	Value       string
+	RequestMeta RequestMeta
+}
+
+type ContactVerificationChallenge struct {
+	Provider    string
+	ChallengeID string
+	ExpiresAt   time.Time
+}
+
+type ContactVerificationVerify struct {
+	UserID      UserID
+	Kind        ContactKind
+	ChallengeID string
+	Code        string
+	RequestMeta RequestMeta
+}
+
+type ContactVerificationProvider interface {
+	Name() string
+	Start(context.Context, ContactVerificationStart) (ContactVerificationChallenge, error)
+	Verify(context.Context, ContactVerificationVerify) error
 }
 
 type UserFilter struct {
@@ -458,6 +579,20 @@ type UserRepository interface {
 	DeleteUsers(context.Context, []UserID) error
 }
 
+type ContactRepository interface {
+	ListUserContacts(context.Context, UserID) ([]UserContact, error)
+	GetUserContact(context.Context, UserID, ContactKind) (*UserContact, error)
+	GetUserByContact(context.Context, ContactKind, string) (*User, error)
+	ReplaceUserContact(context.Context, UserContact) error
+	DeleteUserContact(context.Context, UserID, ContactKind) error
+	GetContactVerification(context.Context, ContactVerificationID) (*ContactVerification, error)
+	GetPendingContactVerification(context.Context, UserID, ContactKind) (*ContactVerification, error)
+	CreateContactVerification(context.Context, ContactVerification) error
+	UpdateContactVerification(context.Context, ContactVerification) error
+	RecordContactVerificationFailure(context.Context, ContactVerificationID, int, time.Time) (*ContactVerification, error)
+	CancelPendingContactVerifications(context.Context, UserID, ContactKind, ContactVerificationID) error
+}
+
 type PasswordRepository interface {
 	GetPasswordCredential(context.Context, UserID) (*PasswordCredential, error)
 	UpsertPasswordCredential(context.Context, PasswordCredential) error
@@ -556,29 +691,35 @@ func (e *ValidationError) Unwrap() error {
 }
 
 var (
-	ErrInvalid            = errors.New("identity invalid")
-	ErrNotFound           = errors.New("identity not found")
-	ErrConflict           = errors.New("identity conflict")
-	ErrInvalidUsername    = fmt.Errorf("%w: invalid identity username", ErrInvalid)
-	ErrUsernameTaken      = errors.New("identity username already taken")
-	ErrInvalidPhone       = fmt.Errorf("%w: invalid identity phone", ErrInvalid)
-	ErrPhoneTaken         = errors.New("identity phone already taken")
-	ErrInvalidEmail       = fmt.Errorf("%w: invalid identity email", ErrInvalid)
-	ErrEmailTaken         = errors.New("identity email already taken")
-	ErrInvalidIdentifier  = fmt.Errorf("%w: invalid identity login identifier", ErrInvalid)
-	ErrInvalidUser        = fmt.Errorf("%w: invalid identity user", ErrInvalid)
-	ErrDisabled           = errors.New("identity user disabled")
-	ErrEmptySelection     = errors.New("empty identity selection")
-	ErrInvalidState       = fmt.Errorf("%w: invalid identity state", ErrInvalid)
-	ErrInvalidRequestMeta = fmt.Errorf("%w: invalid identity request metadata", ErrInvalid)
-	ErrUnauthenticated    = errors.New("identity unauthenticated")
-	ErrExpired            = errors.New("identity credential expired")
-	ErrRevoked            = errors.New("identity credential revoked")
-	ErrBindingMismatch    = errors.New("identity session binding mismatch")
-	ErrWeakPassword       = fmt.Errorf("%w: identity password does not meet policy", ErrInvalid)
-	ErrUnsupported        = errors.New("identity operation unsupported")
-	ErrForbidden          = errors.New("identity forbidden")
-	ErrRateLimited        = errors.New("identity rate limited")
+	ErrInvalid                 = errors.New("identity invalid")
+	ErrNotFound                = errors.New("identity not found")
+	ErrConflict                = errors.New("identity conflict")
+	ErrInvalidUsername         = fmt.Errorf("%w: invalid identity username", ErrInvalid)
+	ErrUsernameTaken           = errors.New("identity username already taken")
+	ErrInvalidPhone            = fmt.Errorf("%w: invalid identity phone", ErrInvalid)
+	ErrInvalidEmail            = fmt.Errorf("%w: invalid identity email", ErrInvalid)
+	ErrInvalidIdentifier       = fmt.Errorf("%w: invalid identity login identifier", ErrInvalid)
+	ErrInvalidContactKind      = fmt.Errorf("%w: invalid identity contact kind", ErrInvalid)
+	ErrContactTaken            = errors.New("identity contact already taken")
+	ErrContactNotFound         = errors.New("identity contact not found")
+	ErrVerificationNotFound    = errors.New("identity contact verification not found")
+	ErrVerificationExpired     = errors.New("identity contact verification expired")
+	ErrVerificationInvalid     = errors.New("identity contact verification invalid")
+	ErrVerificationUnavailable = errors.New("identity contact verification unavailable")
+	ErrVerificationUnsupported = errors.New("identity contact verification unsupported")
+	ErrInvalidUser             = fmt.Errorf("%w: invalid identity user", ErrInvalid)
+	ErrDisabled                = errors.New("identity user disabled")
+	ErrEmptySelection          = errors.New("empty identity selection")
+	ErrInvalidState            = fmt.Errorf("%w: invalid identity state", ErrInvalid)
+	ErrInvalidRequestMeta      = fmt.Errorf("%w: invalid identity request metadata", ErrInvalid)
+	ErrUnauthenticated         = errors.New("identity unauthenticated")
+	ErrExpired                 = errors.New("identity credential expired")
+	ErrRevoked                 = errors.New("identity credential revoked")
+	ErrBindingMismatch         = errors.New("identity session binding mismatch")
+	ErrWeakPassword            = fmt.Errorf("%w: identity password does not meet policy", ErrInvalid)
+	ErrUnsupported             = errors.New("identity operation unsupported")
+	ErrForbidden               = errors.New("identity forbidden")
+	ErrRateLimited             = errors.New("identity rate limited")
 )
 
 func NormalizeUsername(raw string) (string, error) {

@@ -1,7 +1,9 @@
 package handler
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"time"
 
@@ -12,10 +14,21 @@ import (
 type registrationBody struct {
 	Challenge *challengeBody `json:"challenge,omitempty"`
 	Username  string         `json:"username" minLength:"1" maxLength:"64"`
-	Phone     string         `json:"phone,omitempty" maxLength:"16"`
-	Email     string         `json:"email,omitempty" maxLength:"254"`
 	Password  string         `json:"password" minLength:"1"`
 }
+
+func (b *registrationBody) UnmarshalJSON(data []byte) error {
+	type registrationAlias registrationBody
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	var decoded registrationAlias
+	if err := decoder.Decode(&decoded); err != nil {
+		return err
+	}
+	*b = registrationBody(decoded)
+	return nil
+}
+
 type registrationInput struct{ Body registrationBody }
 type loginBody struct {
 	Challenge  *challengeBody `json:"challenge,omitempty"`
@@ -83,11 +96,7 @@ func (e *Endpoint) register(ctx context.Context, input *registrationInput) (*ses
 	if err := e.verifyChallenge(ctx, input.Body.Challenge, e.config.RequireChallengeOnRegistration); err != nil {
 		return nil, mapError(err, false)
 	}
-	_, issued, err := e.services.Accounts.RegisterAndLogin(ctx, domain.UserCreateInput{
-		Username: input.Body.Username,
-		Phone:    input.Body.Phone,
-		Email:    input.Body.Email,
-	}, input.Body.Password, requestMetaFromContext(ctx))
+	_, issued, err := e.services.Accounts.RegisterAndLogin(ctx, domain.UserCreateInput{Username: input.Body.Username}, input.Body.Password, requestMetaFromContext(ctx))
 	if err != nil {
 		return nil, mapError(err, false)
 	}

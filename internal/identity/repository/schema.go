@@ -18,7 +18,9 @@ var requiredSchema = []struct {
 	table   string
 	columns []string
 }{
-	{"identity_users", []string{"id", "username", "phone_e164", "display_name", "email", "avatar_url", "state", "disabled_at", "last_login_at", "created_at", "updated_at"}},
+	{"identity_users", []string{"id", "username", "display_name", "avatar_url", "state", "disabled_at", "last_login_at", "created_at", "updated_at"}},
+	{"identity_user_contacts", []string{"id", "user_id", "kind", "normalized_value", "verified_at", "created_at", "updated_at"}},
+	{"identity_contact_verifications", []string{"id", "user_id", "kind", "normalized_value", "provider", "provider_challenge_id", "status", "attempt_count", "expires_at", "created_at", "consumed_at"}},
 	{"identity_passwords", []string{"user_id", "scheme", "hash", "password_changed_at", "created_at", "updated_at"}},
 	{"identity_sessions", []string{"id", "token_hash", "user_id", "login_ip", "last_ip", "binding_hash", "expires_at", "created_at", "last_seen_at", "revoked_at", "revoked_reason"}},
 	{"identity_roles", []string{"id", "code", "name", "description", "system", "created_at", "updated_at"}},
@@ -35,8 +37,11 @@ type schemaIndexRequirement struct {
 
 var requiredIndexes = []schemaIndexRequirement{
 	{name: "identity_users_username_uq", table: "identity_users", columns: []string{"username"}, unique: true},
-	{name: "identity_users_phone_uq", table: "identity_users", columns: []string{"phone_e164"}, unique: true},
-	{name: "identity_users_email_uq", table: "identity_users", columns: []string{"email"}, unique: true},
+	{name: "identity_user_contacts_user_kind_uq", table: "identity_user_contacts", columns: []string{"user_id", "kind"}, unique: true},
+	{name: "identity_user_contacts_kind_value_uq", table: "identity_user_contacts", columns: []string{"kind", "normalized_value"}, unique: true},
+	{name: "identity_user_contacts_user_idx", table: "identity_user_contacts", columns: []string{"user_id"}, unique: false},
+	{name: "identity_contact_verifications_user_kind_idx", table: "identity_contact_verifications", columns: []string{"user_id", "kind", "created_at"}, unique: false},
+	{name: "identity_contact_verifications_provider_challenge_uq", table: "identity_contact_verifications", columns: []string{"provider", "provider_challenge_id"}, unique: true},
 	{name: "identity_sessions_user_expiry_idx", table: "identity_sessions", columns: []string{"user_id", "expires_at"}},
 	{name: "identity_sessions_expiry_idx", table: "identity_sessions", columns: []string{"expires_at"}},
 	{name: "identity_user_roles_role_idx", table: "identity_user_roles", columns: []string{"role_id"}},
@@ -47,6 +52,8 @@ func DatabaseSchema() Schema {
 	return Schema{
 		Models: []any{
 			(*UserModel)(nil),
+			(*UserContactModel)(nil),
+			(*ContactVerificationModel)(nil),
 			(*PasswordModel)(nil),
 			(*SessionModel)(nil),
 			(*RoleModel)(nil),
@@ -59,6 +66,8 @@ func DatabaseSchema() Schema {
 			"identity_user_roles",
 			"identity_sessions",
 			"identity_passwords",
+			"identity_contact_verifications",
+			"identity_user_contacts",
 			"identity_permissions",
 			"identity_roles",
 			"identity_users",
@@ -113,25 +122,30 @@ func ValidateSchema(ctx context.Context, db *bun.DB) error {
 			}
 		}
 	}
-	if exists, err := schemaColumnExists(ctx, db, "identity_users", "username_key"); err != nil {
-		return fmt.Errorf("inspect removed identity schema column identity_users.username_key: %w", err)
-	} else if exists {
-		return fmt.Errorf("identity schema is stale: removed identity_users.username_key is still present")
+	for _, removedColumn := range []string{"phone_e164", "email"} {
+		exists, err := schemaColumnExists(ctx, db, "identity_users", removedColumn)
+		if err != nil {
+			return fmt.Errorf("inspect removed identity schema column identity_users.%s: %w", removedColumn, err)
+		}
+		if exists {
+			return fmt.Errorf("identity schema is stale: removed identity_users.%s is still present", removedColumn)
+		}
 	}
 	for _, column := range []struct {
+		table    string
 		name     string
 		nullable bool
 	}{
-		{name: "username", nullable: false},
-		{name: "phone_e164", nullable: true},
-		{name: "email", nullable: true},
+		{table: "identity_users", name: "username", nullable: false},
+		{table: "identity_user_contacts", name: "verified_at", nullable: false},
+		{table: "identity_contact_verifications", name: "consumed_at", nullable: true},
 	} {
-		nullable, err := schemaColumnNullable(ctx, db, "identity_users", column.name)
+		nullable, err := schemaColumnNullable(ctx, db, column.table, column.name)
 		if err != nil {
-			return fmt.Errorf("inspect identity schema nullability identity_users.%s: %w", column.name, err)
+			return fmt.Errorf("inspect identity schema nullability %s.%s: %w", column.table, column.name, err)
 		}
 		if nullable != column.nullable {
-			return fmt.Errorf("identity schema is invalid: identity_users.%s nullable=%t, want %t", column.name, nullable, column.nullable)
+			return fmt.Errorf("identity schema is invalid: %s.%s nullable=%t, want %t", column.table, column.name, nullable, column.nullable)
 		}
 	}
 	switch db.Dialect().Name() {
@@ -153,9 +167,20 @@ func ValidateSchema(ctx context.Context, db *bun.DB) error {
 	for _, constraint := range []string{
 		"identity_users_state_chk",
 		"identity_users_username_chk",
-		"identity_users_phone_chk",
+		"identity_user_contacts_kind_chk",
+		"identity_user_contacts_value_chk",
+		"identity_contact_verifications_kind_chk",
+		"identity_contact_verifications_status_chk",
+		"identity_contact_verifications_value_chk",
 	} {
-		exists, err := schemaConstraintExists(ctx, db, "identity_users", constraint)
+		table := "identity_users"
+		if strings.HasPrefix(constraint, "identity_user_contacts") {
+			table = "identity_user_contacts"
+		}
+		if strings.HasPrefix(constraint, "identity_contact_verifications") {
+			table = "identity_contact_verifications"
+		}
+		exists, err := schemaConstraintExists(ctx, db, table, constraint)
 		if err != nil {
 			return fmt.Errorf("inspect identity schema constraint %s: %w", constraint, err)
 		}

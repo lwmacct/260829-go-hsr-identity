@@ -27,6 +27,7 @@ func NewStore(db bun.IDB) *Store {
 }
 
 func (s *Store) Users() domain.UserRepository                  { return s }
+func (s *Store) Contacts() domain.ContactRepository            { return s }
 func (s *Store) Passwords() domain.PasswordRepository          { return s }
 func (s *Store) Sessions() domain.SessionRepository            { return s }
 func (s *Store) Authorization() domain.AuthorizationRepository { return s }
@@ -58,9 +59,7 @@ func (s *Store) CreateUser(ctx context.Context, in domain.UserCreate) (*domain.U
 	m := &UserModel{
 		ID:          in.ID.String(),
 		Username:    in.Username,
-		PhoneE164:   optionalString(in.Phone),
 		DisplayName: in.DisplayName,
-		Email:       optionalString(in.Email),
 		AvatarURL:   in.AvatarURL,
 		State:       string(in.State),
 		DisabledAt:  in.DisabledAt,
@@ -91,9 +90,15 @@ func (s *Store) GetUserByLoginIdentifier(ctx context.Context, identifier domain.
 	case domain.LoginIdentifierUsername:
 		query = query.Where("u.username = ?", identifier.Value)
 	case domain.LoginIdentifierPhone:
-		query = query.Where("u.phone_e164 = ?", identifier.Value)
+		query = query.Join("JOIN identity_user_contacts AS uc ON uc.user_id = u.id").
+			Where("uc.kind = ?", string(domain.ContactKindPhone)).
+			Where("uc.normalized_value = ?", identifier.Value).
+			Where("uc.verified_at IS NOT NULL")
 	case domain.LoginIdentifierEmail:
-		query = query.Where("u.email = ?", identifier.Value)
+		query = query.Join("JOIN identity_user_contacts AS uc ON uc.user_id = u.id").
+			Where("uc.kind = ?", string(domain.ContactKindEmail)).
+			Where("uc.normalized_value = ?", identifier.Value).
+			Where("uc.verified_at IS NOT NULL")
 	default:
 		return nil, domain.ErrInvalidIdentifier
 	}
@@ -135,7 +140,10 @@ func (s *Store) ListUsers(ctx context.Context, filter domain.UserFilter) ([]doma
 func applyUserFilter(q *bun.SelectQuery, filter domain.UserFilter) *bun.SelectQuery {
 	if keyword := strings.TrimSpace(filter.Keyword); keyword != "" {
 		like := "%" + keyword + "%"
-		q = q.Where("(u.username LIKE ? OR u.phone_e164 LIKE ? OR u.display_name LIKE ? OR u.email LIKE ?)", like, like, like, like)
+		q = q.Where(`(u.username LIKE ? OR u.display_name LIKE ? OR EXISTS (
+			SELECT 1 FROM identity_user_contacts AS uc
+			WHERE uc.user_id = u.id AND uc.normalized_value LIKE ?
+		))`, like, like, like)
 	}
 	if filter.State != "" {
 		q = q.Where("u.state = ?", string(filter.State))
@@ -148,12 +156,6 @@ func (s *Store) UpdateUserProfile(ctx context.Context, id domain.UserID, p domai
 		Set("display_name = ?", p.DisplayName).
 		Set("updated_at = ?", p.UpdatedAt).
 		Where("id = ?", id.String())
-	if p.Phone != nil {
-		query = query.Set("phone_e164 = ?", nullableStringValue(p.Phone))
-	}
-	if p.Email != nil {
-		query = query.Set("email = ?", nullableStringValue(p.Email))
-	}
 	if p.AvatarURL != nil {
 		query = query.Set("avatar_url = ?", *p.AvatarURL)
 	}
@@ -213,6 +215,12 @@ func (s *Store) DeleteUsers(ctx context.Context, ids []domain.UserID) error {
 			return err
 		}
 		if _, err := s.db.NewDelete().Model((*UserRoleModel)(nil)).Where("user_id = ?", id.String()).Exec(ctx); err != nil {
+			return err
+		}
+		if _, err := s.db.NewDelete().Model((*ContactVerificationModel)(nil)).Where("user_id = ?", id.String()).Exec(ctx); err != nil {
+			return err
+		}
+		if _, err := s.db.NewDelete().Model((*UserContactModel)(nil)).Where("user_id = ?", id.String()).Exec(ctx); err != nil {
 			return err
 		}
 		res, err := s.db.NewDelete().Model((*UserModel)(nil)).Where("id = ?", id.String()).Exec(ctx)
@@ -412,10 +420,6 @@ func mapUserWriteError(err error) error {
 			switch constraint {
 			case "identity_users_username_uq":
 				return domain.ErrUsernameTaken
-			case "identity_users_phone_uq":
-				return domain.ErrPhoneTaken
-			case "identity_users_email_uq":
-				return domain.ErrEmailTaken
 			default:
 				return domain.ErrConflict
 			}
@@ -427,10 +431,6 @@ func mapUserWriteError(err error) error {
 	switch {
 	case strings.Contains(lower, "identity_users_username_uq"), strings.Contains(lower, "identity_users.username"):
 		return domain.ErrUsernameTaken
-	case strings.Contains(lower, "identity_users_phone_uq"), strings.Contains(lower, "identity_users.phone_e164"):
-		return domain.ErrPhoneTaken
-	case strings.Contains(lower, "identity_users_email_uq"), strings.Contains(lower, "identity_users.email"):
-		return domain.ErrEmailTaken
 	case strings.Contains(lower, "unique"), strings.Contains(lower, "duplicate"):
 		return domain.ErrConflict
 	case strings.Contains(lower, "foreign key"), strings.Contains(lower, "check constraint"):
@@ -465,7 +465,7 @@ func sqliteConstraintError(err error) bool {
 
 func userFrom(m *UserModel) *domain.User {
 	idRaw, _ := uuid.Parse(m.ID)
-	return &domain.User{ID: domain.UserID(idRaw), Username: m.Username, Phone: stringValue(m.PhoneE164), DisplayName: m.DisplayName, Email: stringValue(m.Email), AvatarURL: m.AvatarURL, State: domain.State(m.State), DisabledAt: m.DisabledAt, LastLoginAt: m.LastLoginAt, CreatedAt: m.CreatedAt, UpdatedAt: m.UpdatedAt}
+	return &domain.User{ID: domain.UserID(idRaw), Username: m.Username, DisplayName: m.DisplayName, AvatarURL: m.AvatarURL, State: domain.State(m.State), DisabledAt: m.DisabledAt, LastLoginAt: m.LastLoginAt, CreatedAt: m.CreatedAt, UpdatedAt: m.UpdatedAt}
 }
 
 func optionalString(value string) *string {
