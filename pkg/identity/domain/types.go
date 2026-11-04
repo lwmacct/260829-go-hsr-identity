@@ -731,7 +731,7 @@ func NormalizeUsername(raw string) (string, error) {
 		return "", ErrInvalidUsername
 	}
 	last := value[len(value)-1]
-	if !((last >= 'a' && last <= 'z') || (last >= '0' && last <= '9')) {
+	if (last < 'a' || last > 'z') && (last < '0' || last > '9') {
 		return "", ErrInvalidUsername
 	}
 	for i := 1; i < len(value); i++ {

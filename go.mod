@@ -1,16 +1,16 @@
 module github.com/lwmacct/260829-go-hsr-identity
 
-go 1.27.0
+go 1.27.3
 
 require (
 	github.com/danielgtaylor/huma/v2 v2.39.1
 	github.com/golang-module/base64Captcha v1.3.9
 	github.com/lwmacct/260822-go-pkg-base62 v0.2.260823
-	github.com/uptrace/bun v1.2.18
-	github.com/uptrace/bun/dialect/pgdialect v1.2.18
-	github.com/uptrace/bun/dialect/sqlitedialect v1.2.18
-	github.com/uptrace/bun/driver/pgdriver v1.2.18
-	github.com/uptrace/bun/driver/sqliteshim v1.2.18
+	github.com/uptrace/bun v1.3.0
+	github.com/uptrace/bun/dialect/pgdialect v1.3.0
+	github.com/uptrace/bun/dialect/sqlitedialect v1.3.0
+	github.com/uptrace/bun/driver/pgdriver v1.3.0
+	github.com/uptrace/bun/driver/sqliteshim v1.3.0
 	golang.org/x/crypto v0.55.0
 )
 

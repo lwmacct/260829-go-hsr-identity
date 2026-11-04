@@ -127,7 +127,10 @@ func (s *Store) ListUsers(ctx context.Context, filter domain.UserFilter) ([]doma
 	rows := make([]UserModel, 0, size)
 	q = s.db.NewSelect().Model(&rows)
 	q = applyUserFilter(q, filter)
-	if err := q.OrderExpr("u.created_at DESC, u.id DESC").Limit(size).Offset((page - 1) * size).Scan(ctx); err != nil {
+	if err := q.OrderExpr("u.created_at DESC, u.id DESC").
+		Limit(int64(size)).
+		Offset(int64((page - 1) * size)).
+		Scan(ctx); err != nil {
 		return nil, 0, err
 	}
 	out := make([]domain.User, len(rows))
@@ -468,26 +471,6 @@ func userFrom(m *UserModel) *domain.User {
 	return &domain.User{ID: domain.UserID(idRaw), Username: m.Username, DisplayName: m.DisplayName, AvatarURL: m.AvatarURL, State: domain.State(m.State), DisabledAt: m.DisabledAt, LastLoginAt: m.LastLoginAt, CreatedAt: m.CreatedAt, UpdatedAt: m.UpdatedAt}
 }
 
-func optionalString(value string) *string {
-	if value == "" {
-		return nil
-	}
-	return &value
-}
-
-func nullableStringValue(value *string) any {
-	if value == nil || *value == "" {
-		return nil
-	}
-	return *value
-}
-
-func stringValue(value *string) string {
-	if value == nil {
-		return ""
-	}
-	return *value
-}
 func sessionFrom(m *SessionModel) *domain.SessionRecord {
 	sessionIDRaw, _ := uuid.Parse(m.ID)
 	userIDRaw, _ := uuid.Parse(m.UserID)

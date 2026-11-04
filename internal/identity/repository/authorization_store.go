@@ -22,7 +22,10 @@ func (s *Store) ListRoles(ctx context.Context, filter domain.RoleFilter) ([]doma
 	rows := make([]RoleModel, 0, size)
 	q := s.db.NewSelect().Model(&rows)
 	q = applyRoleFilter(q, filter.Keyword)
-	if err := q.OrderExpr("r.created_at DESC, r.id DESC").Limit(size).Offset((page - 1) * size).Scan(ctx); err != nil {
+	if err := q.OrderExpr("r.created_at DESC, r.id DESC").
+		Limit(int64(size)).
+		Offset(int64((page - 1) * size)).
+		Scan(ctx); err != nil {
 		return nil, 0, err
 	}
 	out := make([]domain.Role, len(rows))
@@ -126,7 +129,10 @@ func (s *Store) ListPermissions(ctx context.Context, filter domain.PermissionFil
 	rows := make([]PermissionModel, 0, size)
 	q := s.db.NewSelect().Model(&rows)
 	q = applyPermissionFilter(q, filter.Keyword)
-	if err := q.OrderExpr("p.created_at DESC, p.id DESC").Limit(size).Offset((page - 1) * size).Scan(ctx); err != nil {
+	if err := q.OrderExpr("p.created_at DESC, p.id DESC").
+		Limit(int64(size)).
+		Offset(int64((page - 1) * size)).
+		Scan(ctx); err != nil {
 		return nil, 0, err
 	}
 	out := make([]domain.Permission, len(rows))
